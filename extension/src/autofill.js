@@ -353,22 +353,41 @@ window.FBMAutofill = (() => {
     if (!value) return false;
     const el = findInput(LABELS.location);
     if (!el) return false; // location field not on this page
+
+    const zip = (String(value).match(/\d{4,}/) || [])[0];
+
+    // Picks the best location suggestion currently shown: prefer one containing
+    // the ZIP, else the first real option. Reuses the robust option collector so
+    // it works regardless of Facebook's exact suggestion markup.
+    const pickSuggestion = () => {
+      const opts = collectOptions();
+      if (!opts.length) return null;
+      if (zip) {
+        const hit = opts.find(o => (o.textContent || '').includes(zip));
+        if (hit) return hit;
+      }
+      // Avoid clicking the input's own row; take the first suggestion with a comma
+      // or digits (real place names look like "10451 · Bronx, NY").
+      return opts.find(o => /[,·]|\d/.test(o.textContent || '')) || opts[0];
+    };
+
     try {
       el.focus();
       setNativeValue(el, '');
       setNativeValue(el, String(value));
-      await sleep(1200);
-      // Pick the first autocomplete suggestion (FB won't accept free text).
-      const opt = await waitFor(
-        () => document.querySelector('ul[role="listbox"] li[role="option"], ul[role="listbox"] li, [role="option"]'),
-        { timeout: 4000 },
-      );
+      // Nudge the autocomplete with keyboard events some widgets listen for.
+      el.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: zip ? zip.slice(-1) : 'a' }));
+      el.dispatchEvent(new KeyboardEvent('keyup',   { bubbles: true, key: zip ? zip.slice(-1) : 'a' }));
+      await sleep(1600);
+
+      const opt = await waitFor(pickSuggestion, { timeout: 5000 });
+      const chosen = (opt.textContent || '').trim();
       opt.click();
-      await sleep(600);
-      log('location', 'success', `set location to "${value}"`);
+      await sleep(800);
+      log('location', 'success', `set location to "${chosen}"`);
       return true;
     } catch (_) {
-      log('location', 'warn', 'typed location but found no suggestion to select');
+      log('location', 'warn', `typed "${value}" but found no suggestion to click`);
       return false;
     }
   }
