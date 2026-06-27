@@ -1,166 +1,153 @@
-const Database = require('better-sqlite3');
+// Pure-JavaScript JSON-file data store. No native modules, no compilation —
+// works on any Node version without build tools. Data lives in data/fbm.json.
+//
+// Exposes the same interface the rest of the app expects, so server.js does
+// not need to change if storage is swapped out later.
 const path = require('path');
 const fs = require('fs');
 
-const DATA_DIR = path.join(__dirname, '..', 'data');
+const DATA_DIR  = path.join(__dirname, '..', 'data');
+const DATA_FILE = path.join(DATA_DIR, 'fbm.json');
 fs.mkdirSync(DATA_DIR, { recursive: true });
 
-const db = new Database(path.join(DATA_DIR, 'fbm.db'));
-db.pragma('journal_mode = WAL');
-db.pragma('foreign_keys = ON');
+const now = () => Math.floor(Date.now() / 1000);
 
-db.exec(`
-  CREATE TABLE IF NOT EXISTS templates (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    title       TEXT NOT NULL,
-    price       REAL,
-    location    TEXT,
-    category    TEXT,
-    description TEXT,
-    photos      TEXT DEFAULT '[]',
-    created_at  INTEGER DEFAULT (unixepoch())
-  );
+// ── Load / persist ──────────────────────────────────────────────────────────
 
-  CREATE TABLE IF NOT EXISTS listings (
-    id         TEXT PRIMARY KEY,
-    title      TEXT,
-    price      TEXT,
-    description TEXT,
-    status     TEXT DEFAULT 'active',
-    url        TEXT,
-    area       TEXT,
-    template_id INTEGER REFERENCES templates(id),
-    first_seen INTEGER DEFAULT (unixepoch()),
-    last_seen  INTEGER DEFAULT (unixepoch()),
-    last_checked INTEGER DEFAULT (unixepoch())
-  );
-
-  CREATE TABLE IF NOT EXISTS listing_events (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    listing_id TEXT NOT NULL REFERENCES listings(id),
-    event      TEXT NOT NULL,
-    detail     TEXT,
-    at         INTEGER DEFAULT (unixepoch())
-  );
-
-  CREATE TABLE IF NOT EXISTS competitors (
-    id         TEXT PRIMARY KEY,
-    title      TEXT,
-    price      TEXT,
-    location   TEXT,
-    url        TEXT,
-    category   TEXT,
-    first_seen INTEGER DEFAULT (unixepoch()),
-    last_seen  INTEGER DEFAULT (unixepoch())
-  );
-
-  CREATE TABLE IF NOT EXISTS ai_suggestions (
-    id           INTEGER PRIMARY KEY AUTOINCREMENT,
-    listing_id   TEXT,
-    template_id  INTEGER,
-    type         TEXT,
-    suggestion   TEXT,
-    created_at   INTEGER DEFAULT (unixepoch())
-  );
-
-  CREATE TABLE IF NOT EXISTS post_queue (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    template_id INTEGER REFERENCES templates(id),
-    title       TEXT,
-    price       TEXT,
-    description TEXT,
-    location    TEXT,
-    category    TEXT,
-    photos      TEXT DEFAULT '[]',
-    status      TEXT DEFAULT 'pending',
-    result      TEXT,
-    created_at  INTEGER DEFAULT (unixepoch()),
-    updated_at  INTEGER DEFAULT (unixepoch())
-  );
-`);
-
-// ── Templates ─────────────────────────────────────────────────────────────────
-
-const stmt = {
-  insertTemplate: db.prepare('INSERT INTO templates (title, price, location, category, description, photos) VALUES (?, ?, ?, ?, ?, ?)'),
-  getTemplates:   db.prepare('SELECT * FROM templates ORDER BY created_at DESC'),
-  getTemplate:    db.prepare('SELECT * FROM templates WHERE id = ?'),
-  deleteTemplate: db.prepare('DELETE FROM templates WHERE id = ?'),
-
-  upsertListing: db.prepare(`
-    INSERT INTO listings (id, title, price, description, status, url, last_seen)
-    VALUES (@id, @title, @price, @description, @status, @url, unixepoch())
-    ON CONFLICT(id) DO UPDATE SET
-      title = excluded.title,
-      price = excluded.price,
-      status = excluded.status,
-      last_seen = unixepoch()
-  `),
-  getListings:   db.prepare('SELECT * FROM listings ORDER BY last_seen DESC'),
-  getListing:    db.prepare('SELECT * FROM listings WHERE id = ?'),
-  updateStatus:  db.prepare('UPDATE listings SET status = ?, last_checked = unixepoch() WHERE id = ?'),
-  getStale:      db.prepare(`SELECT * FROM listings WHERE status = 'active' AND last_checked < unixepoch() - 3600`),
-
-  insertEvent: db.prepare('INSERT INTO listing_events (listing_id, event, detail) VALUES (?, ?, ?)'),
-  getEvents:   db.prepare('SELECT * FROM listing_events WHERE listing_id = ? ORDER BY at DESC'),
-
-  upsertCompetitor: db.prepare(`
-    INSERT INTO competitors (id, title, price, location, url, last_seen)
-    VALUES (@id, @title, @price, @location, @url, unixepoch())
-    ON CONFLICT(id) DO UPDATE SET title = excluded.title, price = excluded.price, last_seen = unixepoch()
-  `),
-  getCompetitors: db.prepare('SELECT * FROM competitors ORDER BY last_seen DESC LIMIT 200'),
-
-  insertSuggestion: db.prepare('INSERT INTO ai_suggestions (listing_id, template_id, type, suggestion) VALUES (?, ?, ?, ?)'),
-  getSuggestions:   db.prepare('SELECT * FROM ai_suggestions ORDER BY created_at DESC LIMIT 50'),
-
-  insertJob: db.prepare(`
-    INSERT INTO post_queue (template_id, title, price, description, location, category, photos)
-    VALUES (@template_id, @title, @price, @description, @location, @category, @photos)
-  `),
-  getNextJob:  db.prepare(`SELECT * FROM post_queue WHERE status = 'pending' ORDER BY created_at ASC LIMIT 1`),
-  getJobs:     db.prepare('SELECT * FROM post_queue ORDER BY created_at DESC LIMIT 100'),
-  getJob:      db.prepare('SELECT * FROM post_queue WHERE id = ?'),
-  updateJob:   db.prepare(`UPDATE post_queue SET status = @status, result = @result, updated_at = unixepoch() WHERE id = @id`),
+const empty = {
+  templates: [], listings: [], listing_events: [],
+  competitors: [], ai_suggestions: [], post_queue: [],
+  counters: { templates: 0, listing_events: 0, ai_suggestions: 0, post_queue: 0 },
 };
 
+let data;
+try {
+  data = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
+  for (const k of Object.keys(empty)) if (!(k in data)) data[k] = empty[k];
+} catch (_) {
+  data = JSON.parse(JSON.stringify(empty));
+}
+
+let saveTimer = null;
+function save() {
+  // Debounce writes so rapid bulk inserts don't thrash the disk.
+  if (saveTimer) return;
+  saveTimer = setTimeout(() => {
+    saveTimer = null;
+    fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
+  }, 50);
+}
+function saveNow() {
+  if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
+  fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
+}
+
+const nextId = (table) => ++data.counters[table];
+const byCreatedDesc = (a, b) => b.created_at - a.created_at;
+
 module.exports = {
-  // Templates
+  // ── Templates ──────────────────────────────────────────────────────────────
   createTemplate: (t) => {
-    const info = stmt.insertTemplate.run(t.title, t.price || null, t.location || null, t.category || null, t.description || null, JSON.stringify(t.photos || []));
-    return stmt.getTemplate.get(info.lastInsertRowid);
+    const row = {
+      id:          nextId('templates'),
+      title:       t.title,
+      price:       t.price != null && t.price !== '' ? Number(t.price) : null,
+      location:    t.location || null,
+      category:    t.category || null,
+      description: t.description || null,
+      photos:      JSON.stringify(t.photos || []),
+      created_at:  now(),
+    };
+    data.templates.push(row);
+    saveNow();
+    return row;
   },
-  getTemplates: () => stmt.getTemplates.all(),
-  getTemplate:  (id) => stmt.getTemplate.get(id),
-  deleteTemplate: (id) => stmt.deleteTemplate.run(id),
+  getTemplates: () => [...data.templates].sort(byCreatedDesc),
+  getTemplate:  (id) => data.templates.find(t => t.id === Number(id)) || null,
+  deleteTemplate: (id) => {
+    data.templates = data.templates.filter(t => t.id !== Number(id));
+    saveNow();
+  },
 
-  // Listings
-  upsertListing: (l) => stmt.upsertListing.run(l),
-  upsertListings: db.transaction((listings) => listings.forEach(l => stmt.upsertListing.run(l))),
-  getListings: () => stmt.getListings.all(),
-  getListing:  (id) => stmt.getListing.get(id),
+  // ── Listings ───────────────────────────────────────────────────────────────
+  upsertListing: (l) => {
+    const existing = data.listings.find(x => x.id === l.id);
+    if (existing) {
+      existing.title     = l.title;
+      existing.price     = l.price;
+      existing.status    = l.status || existing.status;
+      existing.last_seen = now();
+    } else {
+      data.listings.push({
+        id: l.id, title: l.title || '', price: l.price || '',
+        description: l.description || '', status: l.status || 'active',
+        url: l.url || '', area: l.area || null, template_id: l.template_id || null,
+        first_seen: now(), last_seen: now(), last_checked: now(),
+      });
+    }
+    save();
+  },
+  upsertListings(listings) { listings.forEach(l => this.upsertListing(l)); saveNow(); },
+  getListings: () => [...data.listings].sort((a, b) => b.last_seen - a.last_seen),
+  getListing:  (id) => data.listings.find(l => l.id === id) || null,
   updateListingStatus: (id, status) => {
-    stmt.updateStatus.run(status, id);
-    stmt.insertEvent.run(id, 'status_change', status);
+    const l = data.listings.find(x => x.id === id);
+    if (l) { l.status = status; l.last_checked = now(); }
+    data.listing_events.push({
+      id: nextId('listing_events'), listing_id: id,
+      event: 'status_change', detail: status, at: now(),
+    });
+    saveNow();
   },
-  getStaleListings: () => stmt.getStale.all(),
-  getListingEvents: (id) => stmt.getEvents.all(id),
+  getStaleListings: () => data.listings.filter(l => l.status === 'active' && l.last_checked < now() - 3600),
+  getListingEvents: (id) => data.listing_events.filter(e => e.listing_id === id).sort((a, b) => b.at - a.at),
 
-  // Competitors
-  upsertCompetitors: db.transaction((comps) => comps.forEach(c => stmt.upsertCompetitor.run(c))),
-  getCompetitors: () => stmt.getCompetitors.all(),
+  // ── Competitors ──────────────────────────────────────────────────────────────
+  upsertCompetitors: (comps) => {
+    comps.forEach(c => {
+      const existing = data.competitors.find(x => x.id === c.id);
+      if (existing) {
+        existing.title = c.title; existing.price = c.price; existing.last_seen = now();
+      } else {
+        data.competitors.push({
+          id: c.id, title: c.title || '', price: c.price || '',
+          location: c.location || '', url: c.url || '', category: c.category || null,
+          first_seen: now(), last_seen: now(),
+        });
+      }
+    });
+    saveNow();
+  },
+  getCompetitors: () => [...data.competitors].sort((a, b) => b.last_seen - a.last_seen).slice(0, 200),
 
-  // AI suggestions
-  saveSuggestion: (listingId, templateId, type, text) => stmt.insertSuggestion.run(listingId, templateId, type, text),
-  getSuggestions: () => stmt.getSuggestions.all(),
+  // ── AI suggestions ────────────────────────────────────────────────────────────
+  saveSuggestion: (listingId, templateId, type, text) => {
+    data.ai_suggestions.push({
+      id: nextId('ai_suggestions'), listing_id: listingId || null,
+      template_id: templateId || null, type, suggestion: text, created_at: now(),
+    });
+    saveNow();
+  },
+  getSuggestions: () => [...data.ai_suggestions].sort(byCreatedDesc).slice(0, 50),
 
-  // Publish queue
+  // ── Publish queue ─────────────────────────────────────────────────────────────
   createJob: (j) => {
-    const info = stmt.insertJob.run(j);
-    return stmt.getJob.get(info.lastInsertRowid);
+    const row = {
+      id: nextId('post_queue'), template_id: j.template_id || null,
+      title: j.title, price: j.price || '', description: j.description || '',
+      location: j.location || '', category: j.category || '', photos: j.photos || '[]',
+      status: 'pending', result: null, created_at: now(), updated_at: now(),
+    };
+    data.post_queue.push(row);
+    saveNow();
+    return row;
   },
-  getNextJob:  () => stmt.getNextJob.get(),
-  getJobs:     () => stmt.getJobs.all(),
-  getJob:      (id) => stmt.getJob.get(id),
-  updateJob:   (id, status, result) => stmt.updateJob.run({ id, status, result: result || null }),
+  getNextJob: () => [...data.post_queue].filter(j => j.status === 'pending').sort((a, b) => a.created_at - b.created_at)[0] || null,
+  getJobs:    () => [...data.post_queue].sort(byCreatedDesc).slice(0, 100),
+  getJob:     (id) => data.post_queue.find(j => j.id === Number(id)) || null,
+  updateJob:  (id, status, result) => {
+    const j = data.post_queue.find(x => x.id === Number(id));
+    if (j) { j.status = status; j.result = result || null; j.updated_at = now(); }
+    saveNow();
+  },
 };

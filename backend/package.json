@@ -9,7 +9,6 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.30.0",
-    "better-sqlite3": "^9.4.3",
     "cors": "^2.8.5",
     "express": "^4.19.2"
   }
