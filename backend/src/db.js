@@ -11,13 +11,14 @@ db.pragma('foreign_keys = ON');
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS templates (
-    id        INTEGER PRIMARY KEY AUTOINCREMENT,
-    title     TEXT NOT NULL,
-    price     REAL,
-    location  TEXT,
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    title       TEXT NOT NULL,
+    price       REAL,
+    location    TEXT,
+    category    TEXT,
     description TEXT,
-    photos    TEXT DEFAULT '[]',
-    created_at INTEGER DEFAULT (unixepoch())
+    photos      TEXT DEFAULT '[]',
+    created_at  INTEGER DEFAULT (unixepoch())
   );
 
   CREATE TABLE IF NOT EXISTS listings (
@@ -61,12 +62,27 @@ db.exec(`
     suggestion   TEXT,
     created_at   INTEGER DEFAULT (unixepoch())
   );
+
+  CREATE TABLE IF NOT EXISTS post_queue (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    template_id INTEGER REFERENCES templates(id),
+    title       TEXT,
+    price       TEXT,
+    description TEXT,
+    location    TEXT,
+    category    TEXT,
+    photos      TEXT DEFAULT '[]',
+    status      TEXT DEFAULT 'pending',
+    result      TEXT,
+    created_at  INTEGER DEFAULT (unixepoch()),
+    updated_at  INTEGER DEFAULT (unixepoch())
+  );
 `);
 
 // ── Templates ─────────────────────────────────────────────────────────────────
 
 const stmt = {
-  insertTemplate: db.prepare('INSERT INTO templates (title, price, location, description, photos) VALUES (?, ?, ?, ?, ?)'),
+  insertTemplate: db.prepare('INSERT INTO templates (title, price, location, category, description, photos) VALUES (?, ?, ?, ?, ?, ?)'),
   getTemplates:   db.prepare('SELECT * FROM templates ORDER BY created_at DESC'),
   getTemplate:    db.prepare('SELECT * FROM templates WHERE id = ?'),
   deleteTemplate: db.prepare('DELETE FROM templates WHERE id = ?'),
@@ -97,12 +113,21 @@ const stmt = {
 
   insertSuggestion: db.prepare('INSERT INTO ai_suggestions (listing_id, template_id, type, suggestion) VALUES (?, ?, ?, ?)'),
   getSuggestions:   db.prepare('SELECT * FROM ai_suggestions ORDER BY created_at DESC LIMIT 50'),
+
+  insertJob: db.prepare(`
+    INSERT INTO post_queue (template_id, title, price, description, location, category, photos)
+    VALUES (@template_id, @title, @price, @description, @location, @category, @photos)
+  `),
+  getNextJob:  db.prepare(`SELECT * FROM post_queue WHERE status = 'pending' ORDER BY created_at ASC LIMIT 1`),
+  getJobs:     db.prepare('SELECT * FROM post_queue ORDER BY created_at DESC LIMIT 100'),
+  getJob:      db.prepare('SELECT * FROM post_queue WHERE id = ?'),
+  updateJob:   db.prepare(`UPDATE post_queue SET status = @status, result = @result, updated_at = unixepoch() WHERE id = @id`),
 };
 
 module.exports = {
   // Templates
   createTemplate: (t) => {
-    const info = stmt.insertTemplate.run(t.title, t.price || null, t.location || null, t.description || null, JSON.stringify(t.photos || []));
+    const info = stmt.insertTemplate.run(t.title, t.price || null, t.location || null, t.category || null, t.description || null, JSON.stringify(t.photos || []));
     return stmt.getTemplate.get(info.lastInsertRowid);
   },
   getTemplates: () => stmt.getTemplates.all(),
@@ -128,4 +153,14 @@ module.exports = {
   // AI suggestions
   saveSuggestion: (listingId, templateId, type, text) => stmt.insertSuggestion.run(listingId, templateId, type, text),
   getSuggestions: () => stmt.getSuggestions.all(),
+
+  // Publish queue
+  createJob: (j) => {
+    const info = stmt.insertJob.run(j);
+    return stmt.getJob.get(info.lastInsertRowid);
+  },
+  getNextJob:  () => stmt.getNextJob.get(),
+  getJobs:     () => stmt.getJobs.all(),
+  getJob:      (id) => stmt.getJob.get(id),
+  updateJob:   (id, status, result) => stmt.updateJob.run({ id, status, result: result || null }),
 };

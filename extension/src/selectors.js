@@ -10,25 +10,42 @@ window.FBM_SELECTORS = {
   yourListingsNav: 'a[href*="/marketplace/you/selling"]',
   listingStatusBadge: 'span[class*="x1vvkbs"]',
 
-  // Create listing form fields
-  createListingBtn: 'a[href*="/marketplace/create"]',
-  titleInput: 'label[aria-label="Title"] input, input[placeholder*="Title"]',
-  priceInput: 'label[aria-label="Price"] input, input[placeholder*="Price"]',
+  // ── Create listing form ───────────────────────────────────────────────────
+  // Step 0: listing type selection (appears on /marketplace/create)
+  itemForSaleBtn: 'div[aria-label="Item for sale"], a[href*="/marketplace/create/item"]',
+
+  // Step 1: fill fields
+  titleInput:       'label[aria-label="Title"] input, input[placeholder*="Title"]',
+  priceInput:       'label[aria-label="Price"] input, input[placeholder*="Price"]',
   descriptionInput: 'label[aria-label="Description"] textarea, textarea[placeholder*="Description"]',
-  categorySelect: 'label[aria-label="Category"] div[role="button"]',
-  locationInput: 'label[aria-label="Location"] input',
-  photoUploadBtn: 'input[type="file"][accept*="image"]',
-  publishBtn: 'div[aria-label="Publish"][role="button"], div[aria-label="Next"][role="button"]',
+  locationInput:    'label[aria-label="Location"] input, input[placeholder*="Location"]',
+
+  // Category — click the button, then search/select
+  categoryBtn:      'label[aria-label="Category"] div[role="button"], div[aria-label="Category"][role="button"]',
+  categorySearch:   'input[placeholder*="Search categories"], input[aria-label*="category"]',
+
+  // Condition dropdown
+  conditionBtn:     'label[aria-label="Condition"] div[role="button"]',
+
+  // Photo upload — hidden file input triggered by clicking a visible upload area
+  photoUploadInput: 'input[type="file"][accept*="image"]',
+  photoUploadArea:  'div[aria-label*="photo"], div[aria-label*="Photo"], div[role="button"][tabindex="0"] svg',
+
+  // Navigation buttons  (text-matched in code, these are fallback attribute selectors)
+  nextBtn:    'div[aria-label="Next"][role="button"], div[aria-label="next"][role="button"]',
+  publishBtn: 'div[aria-label="Publish"][role="button"], div[aria-label="publish"][role="button"]',
+
+  // Autocomplete suggestion list
+  autocompleteSuggestion: 'ul[role="listbox"] li:first-child, div[role="option"]:first-child',
 
   // Listing detail page
-  listingDetailTitle: 'h1[class*="x1heor9g"], span[class*="x193iq5w"][class*="x1pd3egz"]',
-  listingDetailPrice: 'span[class*="x193iq5w"][class*="xeuugli"]',
+  listingDetailTitle:  'h1[class*="x1heor9g"], span[class*="x193iq5w"][class*="x1pd3egz"]',
+  listingDetailPrice:  'span[class*="x193iq5w"][class*="xeuugli"]',
   listingDetailStatus: 'div[class*="x1n2onr6"] span[class*="x1vvkbs"]',
-  listingDetailId: null, // extracted from URL: /marketplace/item/{id}
 
   // Competitor / browse results
-  browseCard: 'div[class*="x9f619"][class*="xu3j5b3"] a[href*="/marketplace/item/"]',
-  browseCardTitle: 'span[class*="x1lliihq"]',
-  browseCardPrice: 'span[class*="x193iq5w"]',
+  browseCard:         'div[class*="x9f619"][class*="xu3j5b3"] a[href*="/marketplace/item/"]',
+  browseCardTitle:    'span[class*="x1lliihq"]',
+  browseCardPrice:    'span[class*="x193iq5w"]',
   browseCardLocation: 'span[class*="x1vvkbs"]:last-child',
 };

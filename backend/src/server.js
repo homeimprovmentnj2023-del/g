@@ -23,9 +23,9 @@ app.get('/api/templates/:id', (req, res) => {
 });
 
 app.post('/api/templates', (req, res) => {
-  const { title, price, location, description, photos } = req.body;
+  const { title, price, location, category, description, photos } = req.body;
   if (!title) return res.status(400).json({ error: 'title required' });
-  res.status(201).json(db.createTemplate({ title, price, location, description, photos }));
+  res.status(201).json(db.createTemplate({ title, price, location, category, description, photos }));
 });
 
 app.delete('/api/templates/:id', (req, res) => {
@@ -84,6 +84,60 @@ app.post('/api/competitors/bulk', (req, res) => {
   }));
   db.upsertCompetitors(comps);
   res.json({ ok: true, count: comps.length });
+});
+
+// ── Publish Queue ─────────────────────────────────────────────────────────────
+
+// Create a job from a template (extension calls this when user clicks Publish)
+app.post('/api/publish', (req, res) => {
+  const { templateId } = req.body;
+  if (!templateId) return res.status(400).json({ error: 'templateId required' });
+
+  const template = db.getTemplate(templateId);
+  if (!template) return res.status(404).json({ error: 'Template not found' });
+
+  const job = db.createJob({
+    template_id: template.id,
+    title:       template.title,
+    price:       template.price ? String(template.price) : '',
+    description: template.description || '',
+    location:    template.location || '',
+    category:    template.category || '',
+    photos:      template.photos || '[]',
+  });
+  res.status(201).json(job);
+});
+
+// Create a job with explicit fields (from dashboard)
+app.post('/api/publish/custom', (req, res) => {
+  const { templateId, title, price, description, location, category, photos } = req.body;
+  if (!title) return res.status(400).json({ error: 'title required' });
+
+  const job = db.createJob({
+    template_id: templateId || null,
+    title,
+    price:       price ? String(price) : '',
+    description: description || '',
+    location:    location || '',
+    category:    category || '',
+    photos:      JSON.stringify(photos || []),
+  });
+  res.status(201).json(job);
+});
+
+// Background script polls this — 204 = nothing to do
+app.get('/api/publish/next', (_req, res) => {
+  const job = db.getNextJob();
+  job ? res.json(job) : res.sendStatus(204);
+});
+
+app.get('/api/publish/queue', (_req, res) => res.json(db.getJobs()));
+
+app.patch('/api/publish/:id', (req, res) => {
+  const { status, result } = req.body;
+  if (!status) return res.status(400).json({ error: 'status required' });
+  db.updateJob(req.params.id, status, result);
+  res.json({ ok: true });
 });
 
 // ── AI Suggestions ────────────────────────────────────────────────────────────

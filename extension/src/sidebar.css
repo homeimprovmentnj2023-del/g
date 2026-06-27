@@ -118,6 +118,8 @@ button#fbm-scan-competitors, button#fbm-save-tmpl, button#fbm-cancel-tmpl {
 
 .fbm-btn-fill { color: #1877f2; border-color: #1877f2; }
 .fbm-btn-fill:hover { background: #e7f0fd; }
+.fbm-btn-publish { color: #2e7d32; border-color: #2e7d32; }
+.fbm-btn-publish:hover { background: #e8f5e9; }
 .fbm-btn-del { color: #d32f2f; border-color: #d32f2f; }
 .fbm-btn-del:hover { background: #fdecea; }
 

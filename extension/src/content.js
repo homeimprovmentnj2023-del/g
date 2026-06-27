@@ -104,14 +104,18 @@ async function loadTemplates(sidebar) {
         <strong>${escHtml(t.title)}</strong>
         <span class="fbm-price">$${t.price}</span>
         <div class="fbm-card-actions">
-          <button class="fbm-btn-fill" data-id="${t.id}">Fill Form</button>
-          <button class="fbm-btn-del" data-id="${t.id}">Delete</button>
+          <button class="fbm-btn-fill"    data-id="${t.id}">Fill Form</button>
+          <button class="fbm-btn-publish" data-id="${t.id}">Publish</button>
+          <button class="fbm-btn-del"     data-id="${t.id}">Delete</button>
         </div>
       </div>
     `).join('');
 
     list.querySelectorAll('.fbm-btn-fill').forEach(btn => {
       btn.onclick = () => fillFromTemplate(btn.dataset.id, sidebar);
+    });
+    list.querySelectorAll('.fbm-btn-publish').forEach(btn => {
+      btn.onclick = () => publishTemplate(btn.dataset.id, sidebar);
     });
     list.querySelectorAll('.fbm-btn-del').forEach(btn => {
       btn.onclick = () => deleteTemplate(btn.dataset.id, sidebar);
@@ -134,14 +138,34 @@ async function deleteTemplate(id, sidebar) {
   loadTemplates(sidebar);
 }
 
+async function publishTemplate(id, sidebar) {
+  if (!confirm('Auto-post this template to Facebook Marketplace now?')) return;
+  showToast('Queuing publish job…');
+  try {
+    const res = await fetch(`${BACKEND}/api/publish`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ templateId: id }),
+    });
+    const job = await res.json();
+    if (job.error) { showToast('Error: ' + job.error); return; }
+    showToast('Job queued! FB will open and post automatically.');
+    // Trigger immediate processing without waiting for the next alarm
+    chrome.runtime.sendMessage({ type: 'PUBLISH_NOW' });
+  } catch (_) {
+    showToast('Backend offline — start it first.');
+  }
+}
+
 function openNewTemplateForm(sidebar) {
   const list = sidebar.querySelector('#fbm-template-list');
   list.innerHTML = `
     <div id="fbm-new-tmpl-form">
-      <input id="ftitle" placeholder="Title" />
-      <input id="fprice" placeholder="Price (numbers only)" type="number" />
+      <input id="ftitle"    placeholder="Title" />
+      <input id="fprice"    placeholder="Price (numbers only)" type="number" />
       <input id="flocation" placeholder="ZIP or city" />
-      <textarea id="fdesc" placeholder="Description" rows="4"></textarea>
+      <input id="fcategory" placeholder="Category (e.g. Electronics)" />
+      <textarea id="fdesc"  placeholder="Description" rows="4"></textarea>
       <div class="fbm-row">
         <button id="fbm-save-tmpl">Save</button>
         <button id="fbm-cancel-tmpl">Cancel</button>
@@ -151,9 +175,10 @@ function openNewTemplateForm(sidebar) {
   sidebar.querySelector('#fbm-cancel-tmpl').onclick = () => loadTemplates(sidebar);
   sidebar.querySelector('#fbm-save-tmpl').onclick = async () => {
     const body = {
-      title: document.getElementById('ftitle').value,
-      price: document.getElementById('fprice').value,
-      location: document.getElementById('flocation').value,
+      title:       document.getElementById('ftitle').value,
+      price:       document.getElementById('fprice').value,
+      location:    document.getElementById('flocation').value,
+      category:    document.getElementById('fcategory').value,
       description: document.getElementById('fdesc').value,
     };
     if (!body.title) { showToast('Title is required'); return; }
@@ -233,6 +258,10 @@ function listenForMessages() {
   chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     if (msg.type === 'FILL_TEMPLATE') {
       window.FBMAutofill.fill(msg.template).then(sendResponse);
+      return true;
+    }
+    if (msg.type === 'FILL_AND_PUBLISH') {
+      window.FBMAutofill.fillAndPublish(msg.template).then(sendResponse);
       return true;
     }
     if (msg.type === 'SCRAPE_LISTINGS') {
