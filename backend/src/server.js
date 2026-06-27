@@ -1,4 +1,19 @@
-require('dotenv').config({ path: require('path').join(__dirname, '..', '.env') });
+// Load .env if dotenv is available (optional — AI features need ANTHROPIC_API_KEY).
+try {
+  require('dotenv').config({ path: require('path').join(__dirname, '..', '.env') });
+} catch (_) {
+  // dotenv not installed — read .env manually so the server still starts.
+  try {
+    const fs = require('fs');
+    const envPath = require('path').join(__dirname, '..', '.env');
+    if (fs.existsSync(envPath)) {
+      for (const line of fs.readFileSync(envPath, 'utf8').split('\n')) {
+        const m = line.match(/^\s*([\w.-]+)\s*=\s*(.*)\s*$/);
+        if (m && !process.env[m[1]]) process.env[m[1]] = m[2].replace(/^["']|["']$/g, '');
+      }
+    }
+  } catch (_) { /* no .env — fine */ }
+}
 
 const express = require('express');
 const cors    = require('cors');
