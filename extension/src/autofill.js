@@ -358,6 +358,20 @@ window.FBMAutofill = (() => {
     }
   }
 
+  // Shows a big, unmissable status banner at the top of the Facebook page so the
+  // user sees exactly what happened without opening any dashboard or error page.
+  function showBanner(message, kind = 'info') {
+    try {
+      let b = document.getElementById('fbm-banner');
+      if (!b) { b = document.createElement('div'); b.id = 'fbm-banner'; document.documentElement.appendChild(b); }
+      const bg = kind === 'ok' ? '#2e7d32' : kind === 'warn' ? '#b26a00' : kind === 'error' ? '#c62828' : '#1877f2';
+      b.textContent = '📋 Auto-Post: ' + message;
+      b.style.cssText = `position:fixed;top:0;left:0;right:0;z-index:2147483647;padding:14px 20px;` +
+        `font:600 15px -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#fff;text-align:center;` +
+        `background:${bg};box-shadow:0 2px 10px rgba(0,0,0,.35);white-space:normal`;
+    } catch (_) {}
+  }
+
   // Broadly find the location autocomplete suggestion rows, regardless of markup.
   function locationSuggestions() {
     const nodes = [
@@ -499,6 +513,7 @@ window.FBMAutofill = (() => {
   async function fillAndPublish(template) {
     currentJobId = template.__jobId != null ? template.__jobId : null;
     log('start', 'info', `auto-posting "${template.title}"`);
+    showBanner(`Posting "${template.title}"… please don't touch the page`, 'info');
 
     try {
       // Step 0 — listing-type chooser
@@ -543,6 +558,7 @@ window.FBMAutofill = (() => {
           ? 'Facebook requires at least one photo. Add a photo to this template in the dashboard, then publish again.'
           : 'The template photo(s) could not be uploaded. Use a different image in the dashboard, then publish again.';
         log('images', 'error', msg);
+        showBanner(msg, 'warn');
         await flushLogs();
         return { ok: false, needsPhoto: true, error: msg };
       }
@@ -552,7 +568,7 @@ window.FBMAutofill = (() => {
       // get stuck, re-satisfy required dropdowns. No human ever needed.
       for (let step = 0; step < 6; step++) {
         const block = detectBlock();
-        if (block) { log('navigate', 'block', block); await flushLogs(); return { ok: false, blocked: true, error: 'Facebook blocked this listing: ' + block }; }
+        if (block) { log('navigate', 'block', block); showBanner('Facebook blocked this listing: ' + block, 'error'); await flushLogs(); return { ok: false, blocked: true, error: 'Facebook blocked this listing: ' + block }; }
 
         // The location/ZIP step often appears after Next — fill it if shown.
         await fillLocation(template.location);
@@ -578,10 +594,13 @@ window.FBMAutofill = (() => {
       // Step 5 — publish (publish() retries the click and hard-stops on a block)
       const result = await publish();
       log('done', result.ok ? 'success' : (result.blocked ? 'block' : 'error'), result.error || 'published');
+      if (result.ok) showBanner('Published successfully! ✅', 'ok');
+      else showBanner(result.error || 'Could not finish publishing', 'warn');
       await flushLogs();
       return result;
     } catch (err) {
       log('fatal', 'error', err.message);
+      showBanner('Stopped: ' + err.message, 'error');
       await flushLogs();
       return { ok: false, error: err.message };
     }

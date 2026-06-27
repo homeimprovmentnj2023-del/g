@@ -180,12 +180,12 @@ async function runPublishJob(job) {
 
       const result = results?.[0]?.result || { ok: false, error: 'No result from content script' };
 
-      // Keep the tab OPEN when the user needs to finish manually (e.g. pick a
-      // required Category/Condition). Otherwise close it.
-      if (result.needsHuman) {
-        chrome.tabs.update(tab.id, { active: true }).catch(() => {});
+      // Keep the tab OPEN on any non-success so the user can read the on-page
+      // banner explaining what happened. On success, close after a short pause.
+      if (result.ok) {
+        setTimeout(() => chrome.tabs.remove(tab.id).catch(() => {}), 4000);
       } else {
-        chrome.tabs.remove(tab.id).catch(() => {});
+        chrome.tabs.update(tab.id, { active: true }).catch(() => {});
       }
       publishTabId = null;
 
