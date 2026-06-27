@@ -1,0 +1,16 @@
+{
+  "name": "fbm-backend",
+  "version": "1.0.0",
+  "description": "Local backend for FB Marketplace Manager",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.30.0",
+    "better-sqlite3": "^9.4.3",
+    "cors": "^2.8.5",
+    "express": "^4.19.2"
+  }
+}

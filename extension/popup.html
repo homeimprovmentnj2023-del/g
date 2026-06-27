@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>FB Marketplace Manager</title>
+  <style>
+    body { width: 280px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; font-size: 13px; padding: 0; margin: 0; }
+    header { background: #1877f2; color: #fff; padding: 12px 16px; font-weight: 600; font-size: 14px; }
+    section { padding: 12px 16px; border-bottom: 1px solid #eee; }
+    section h3 { margin: 0 0 8px; font-size: 12px; text-transform: uppercase; color: #888; letter-spacing: .5px; }
+    button { display: block; width: 100%; padding: 8px; margin-bottom: 6px; border: 1px solid #ddd; border-radius: 5px; background: #fff; cursor: pointer; text-align: left; font-size: 13px; color: #1877f2; }
+    button:hover { background: #e7f0fd; }
+    a.link { display: block; padding: 10px 16px; text-align: center; color: #1877f2; font-size: 13px; text-decoration: none; }
+    a.link:hover { background: #f0f2f5; }
+    #status { padding: 6px 16px; font-size: 11px; color: #888; min-height: 20px; }
+  </style>
+</head>
+<body>
+  <header>FB Marketplace Manager</header>
+
+  <section>
+    <h3>Quick Actions</h3>
+    <button id="btn-open-sidebar">Open Sidebar on Marketplace</button>
+    <button id="btn-scan">Scan Current Listings</button>
+    <button id="btn-scan-comp">Scan Competitors</button>
+  </section>
+
+  <div id="status"></div>
+
+  <a class="link" href="http://localhost:3333" target="_blank">Open Dashboard ↗</a>
+
+  <script src="src/popup.js"></script>
+</body>
+</html>

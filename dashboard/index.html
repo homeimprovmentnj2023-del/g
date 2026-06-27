@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>FB Marketplace Manager</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --blue: #1877f2;
+      --green: #2ecc71;
+      --red: #e74c3c;
+      --gray: #f0f2f5;
+      --border: #ddd;
+      --text: #1c1e21;
+      --dim: #65676b;
+    }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; font-size: 14px; color: var(--text); background: var(--gray); }
+    header { background: var(--blue); color: #fff; padding: 14px 24px; display: flex; align-items: center; gap: 16px; }
+    header h1 { font-size: 18px; font-weight: 700; }
+    nav { display: flex; gap: 8px; margin-left: auto; }
+    nav button { background: rgba(255,255,255,.15); color: #fff; border: none; border-radius: 6px; padding: 6px 14px; cursor: pointer; font-size: 13px; transition: background .15s; }
+    nav button.active, nav button:hover { background: rgba(255,255,255,.3); }
+    main { max-width: 1100px; margin: 0 auto; padding: 20px 16px; }
+    .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin-bottom: 20px; }
+    .stat-card { background: #fff; border-radius: 10px; padding: 18px; border: 1px solid var(--border); }
+    .stat-card .value { font-size: 28px; font-weight: 700; color: var(--blue); }
+    .stat-card .label { font-size: 12px; color: var(--dim); margin-top: 4px; }
+    .panel { display: none; }
+    .panel.active { display: block; }
+    table { width: 100%; border-collapse: collapse; background: #fff; border-radius: 10px; overflow: hidden; border: 1px solid var(--border); }
+    th { background: var(--gray); text-align: left; padding: 10px 14px; font-size: 12px; text-transform: uppercase; color: var(--dim); font-weight: 600; }
+    td { padding: 10px 14px; border-top: 1px solid var(--border); vertical-align: top; }
+    tr:hover td { background: #fafafa; }
+    .badge { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 600; }
+    .badge-active   { background: #d4edda; color: #155724; }
+    .badge-inactive { background: #f8d7da; color: #721c24; }
+    .badge-unknown  { background: #e2e3e5; color: #383d41; }
+    .btn { padding: 7px 14px; border-radius: 6px; border: none; cursor: pointer; font-size: 13px; }
+    .btn-primary { background: var(--blue); color: #fff; }
+    .btn-danger  { background: var(--red);  color: #fff; }
+    .btn-sm { padding: 4px 10px; font-size: 12px; }
+    .toolbar { display: flex; gap: 10px; margin-bottom: 14px; align-items: center; }
+    .toolbar h2 { font-size: 16px; flex: 1; }
+    section { margin-bottom: 24px; }
+    .modal-bg { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.4); z-index: 100; justify-content: center; align-items: center; }
+    .modal-bg.open { display: flex; }
+    .modal { background: #fff; border-radius: 12px; padding: 24px; width: 440px; max-width: 95vw; }
+    .modal h3 { margin-bottom: 16px; }
+    label { display: block; margin-bottom: 4px; font-size: 12px; color: var(--dim); font-weight: 600; }
+    input, textarea, select { width: 100%; padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; font-size: 13px; margin-bottom: 12px; }
+    textarea { resize: vertical; min-height: 80px; }
+    .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 4px; }
+    .suggest-box { background: #f0f8ff; border: 1px solid #bee3f8; border-radius: 8px; padding: 14px; margin-top: 12px; white-space: pre-wrap; font-size: 13px; line-height: 1.5; }
+    .empty { color: var(--dim); padding: 20px; text-align: center; }
+    #toast { position: fixed; bottom: 20px; right: 20px; background: #323232; color: #fff; padding: 12px 20px; border-radius: 8px; font-size: 13px; opacity: 0; pointer-events: none; transition: opacity .3s; z-index: 200; }
+    #toast.show { opacity: 1; }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>FB Marketplace Manager</h1>
+  <nav>
+    <button class="active" data-panel="overview">Overview</button>
+    <button data-panel="listings">Listings</button>
+    <button data-panel="templates">Templates</button>
+    <button data-panel="competitors">Competitors</button>
+    <button data-panel="suggestions">AI Suggestions</button>
+  </nav>
+</header>
+
+<main>
+
+  <!-- Overview -->
+  <div id="panel-overview" class="panel active">
+    <div class="cards" id="stat-cards">
+      <div class="stat-card"><div class="value" id="stat-total">—</div><div class="label">Total Listings</div></div>
+      <div class="stat-card"><div class="value" id="stat-active">—</div><div class="label">Active</div></div>
+      <div class="stat-card"><div class="value" id="stat-inactive">—</div><div class="label">Inactive / Removed</div></div>
+      <div class="stat-card"><div class="value" id="stat-competitors">—</div><div class="label">Competitors Tracked</div></div>
+      <div class="stat-card"><div class="value" id="stat-avg-price">—</div><div class="label">Avg Competitor Price</div></div>
+    </div>
+    <section>
+      <div class="toolbar"><h2>Recent Listings</h2></div>
+      <div id="overview-listings"></div>
+    </section>
+  </div>
+
+  <!-- Listings -->
+  <div id="panel-listings" class="panel">
+    <section>
+      <div class="toolbar">
+        <h2>My Listings</h2>
+      </div>
+      <div id="listings-table"></div>
+    </section>
+  </div>
+
+  <!-- Templates -->
+  <div id="panel-templates" class="panel">
+    <section>
+      <div class="toolbar">
+        <h2>Templates</h2>
+        <button class="btn btn-primary" id="btn-new-template">+ New Template</button>
+      </div>
+      <div id="templates-table"></div>
+    </section>
+  </div>
+
+  <!-- Competitors -->
+  <div id="panel-competitors" class="panel">
+    <section>
+      <div class="toolbar">
+        <h2>Competitor Listings</h2>
+        <span style="color:var(--dim);font-size:12px;">Scan from the extension sidebar on a browse page</span>
+      </div>
+      <div id="competitors-table"></div>
+    </section>
+  </div>
+
+  <!-- AI Suggestions -->
+  <div id="panel-suggestions" class="panel">
+    <section>
+      <div class="toolbar"><h2>AI Suggestions</h2></div>
+      <div id="suggestions-list"></div>
+    </section>
+  </div>
+
+</main>
+
+<!-- New Template Modal -->
+<div class="modal-bg" id="modal-template">
+  <div class="modal">
+    <h3 id="modal-title">New Template</h3>
+    <label>Title</label><input id="tmpl-title" placeholder="e.g. iPhone 14 Pro 128GB Space Black" />
+    <label>Price ($)</label><input id="tmpl-price" type="number" placeholder="e.g. 750" />
+    <label>Location / ZIP</label><input id="tmpl-location" placeholder="e.g. 07001 or Newark NJ" />
+    <label>Description</label><textarea id="tmpl-desc" placeholder="Describe the item…"></textarea>
+    <div id="suggest-area"></div>
+    <div class="modal-actions">
+      <button class="btn" id="btn-suggest-title">✨ Suggest Title</button>
+      <button class="btn" id="btn-suggest-desc">✨ Suggest Description</button>
+      <button class="btn btn-primary" id="btn-save-template">Save</button>
+      <button class="btn" id="btn-cancel-template">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+const API = '';
+
+// ── Nav ───────────────────────────────────────────────────────────────────────
+
+document.querySelectorAll('nav button').forEach(btn => {
+  btn.onclick = () => {
+    document.querySelectorAll('nav button').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+    btn.classList.add('active');
+    document.getElementById(`panel-${btn.dataset.panel}`).classList.add('active');
+    loadPanel(btn.dataset.panel);
+  };
+});
+
+// ── Load ──────────────────────────────────────────────────────────────────────
+
+async function get(url) {
+  const r = await fetch(API + url);
+  return r.json();
+}
+
+async function post(url, body) {
+  const r = await fetch(API + url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  return r.json();
+}
+
+async function del(url) {
+  return fetch(API + url, { method: 'DELETE' });
+}
+
+function loadPanel(name) {
+  if (name === 'overview')     loadOverview();
+  if (name === 'listings')     loadListings();
+  if (name === 'templates')    loadTemplates();
+  if (name === 'competitors')  loadCompetitors();
+  if (name === 'suggestions')  loadSuggestions();
+}
+
+// ── Overview ──────────────────────────────────────────────────────────────────
+
+async function loadOverview() {
+  const [ana, listings] = await Promise.all([get('/api/analytics'), get('/api/listings')]);
+  document.getElementById('stat-total').textContent     = ana.totalListings;
+  document.getElementById('stat-active').textContent    = ana.statusCounts?.active || 0;
+  document.getElementById('stat-inactive').textContent  = ana.statusCounts?.inactive || 0;
+  document.getElementById('stat-competitors').textContent = ana.totalCompetitors;
+  document.getElementById('stat-avg-price').textContent = ana.avgCompetitorPrice ? `$${ana.avgCompetitorPrice}` : '—';
+
+  const el = document.getElementById('overview-listings');
+  el.innerHTML = renderListingsTable(listings.slice(0, 10));
+}
+
+// ── Listings ──────────────────────────────────────────────────────────────────
+
+async function loadListings() {
+  const listings = await get('/api/listings');
+  document.getElementById('listings-table').innerHTML = renderListingsTable(listings);
+}
+
+function renderListingsTable(listings) {
+  if (!listings.length) return '<p class="empty">No listings yet. Use the extension to scan your Marketplace listings.</p>';
+  return `<table>
+    <thead><tr><th>Title</th><th>Price</th><th>Status</th><th>Last Seen</th><th>URL</th></tr></thead>
+    <tbody>${listings.map(l => `
+      <tr>
+        <td>${esc(l.title)}</td>
+        <td>${esc(l.price)}</td>
+        <td><span class="badge badge-${l.status}">${l.status}</span></td>
+        <td>${relTime(l.last_seen)}</td>
+        <td>${l.url ? `<a href="${esc(l.url)}" target="_blank" style="color:var(--blue)">View ↗</a>` : '—'}</td>
+      </tr>`).join('')}
+    </tbody>
+  </table>`;
+}
+
+// ── Templates ─────────────────────────────────────────────────────────────────
+
+async function loadTemplates() {
+  const templates = await get('/api/templates');
+  const el = document.getElementById('templates-table');
+  if (!templates.length) {
+    el.innerHTML = '<p class="empty">No templates yet. Create one to quickly fill the listing form.</p>';
+    return;
+  }
+  el.innerHTML = `<table>
+    <thead><tr><th>Title</th><th>Price</th><th>Location</th><th>Actions</th></tr></thead>
+    <tbody>${templates.map(t => `
+      <tr>
+        <td>${esc(t.title)}</td>
+        <td>$${esc(t.price)}</td>
+        <td>${esc(t.location || '—')}</td>
+        <td>
+          <button class="btn btn-sm btn-danger" onclick="deleteTemplate(${t.id})">Delete</button>
+          <button class="btn btn-sm btn-primary" style="margin-left:4px" onclick="suggestForTemplate(${t.id})">✨ AI</button>
+        </td>
+      </tr>`).join('')}
+    </tbody>
+  </table>`;
+}
+
+async function deleteTemplate(id) {
+  if (!confirm('Delete this template?')) return;
+  await del(`/api/templates/${id}`);
+  loadTemplates();
+}
+
+async function suggestForTemplate(id) {
+  showToast('Getting AI suggestion…');
+  const { suggestion } = await post('/api/suggest', { templateId: id, type: 'title' });
+  alert('Suggested titles:\n\n' + suggestion);
+}
+
+// New template modal
+document.getElementById('btn-new-template').onclick = () => {
+  document.getElementById('modal-template').classList.add('open');
+  document.getElementById('suggest-area').innerHTML = '';
+};
+document.getElementById('btn-cancel-template').onclick = () => document.getElementById('modal-template').classList.remove('open');
+
+document.getElementById('btn-save-template').onclick = async () => {
+  const title = document.getElementById('tmpl-title').value.trim();
+  if (!title) { showToast('Title is required'); return; }
+  await post('/api/templates', {
+    title,
+    price:       document.getElementById('tmpl-price').value,
+    location:    document.getElementById('tmpl-location').value,
+    description: document.getElementById('tmpl-desc').value,
+  });
+  document.getElementById('modal-template').classList.remove('open');
+  loadTemplates();
+  showToast('Template saved!');
+};
+
+document.getElementById('btn-suggest-title').onclick = async () => {
+  const title = document.getElementById('tmpl-title').value.trim();
+  if (!title) { showToast('Enter a title first'); return; }
+  showToast('Generating…');
+  const tmpTemplate = { title, price: document.getElementById('tmpl-price').value, description: document.getElementById('tmpl-desc').value };
+  // Temporarily save and suggest
+  const saved = await post('/api/templates', tmpTemplate);
+  const { suggestion } = await post('/api/suggest', { templateId: saved.id, type: 'title' });
+  await del(`/api/templates/${saved.id}`);
+  document.getElementById('suggest-area').innerHTML = `<div class="suggest-box"><strong>Suggested titles:</strong>\n${esc(suggestion)}</div>`;
+};
+
+document.getElementById('btn-suggest-desc').onclick = async () => {
+  const title = document.getElementById('tmpl-title').value.trim();
+  if (!title) { showToast('Enter a title first'); return; }
+  showToast('Generating…');
+  const tmpTemplate = { title, price: document.getElementById('tmpl-price').value, description: document.getElementById('tmpl-desc').value };
+  const saved = await post('/api/templates', tmpTemplate);
+  const { suggestion } = await post('/api/suggest', { templateId: saved.id, type: 'description' });
+  await del(`/api/templates/${saved.id}`);
+  document.getElementById('suggest-area').innerHTML = `<div class="suggest-box"><strong>Suggested description:</strong>\n${esc(suggestion)}</div>`;
+};
+
+// ── Competitors ───────────────────────────────────────────────────────────────
+
+async function loadCompetitors() {
+  const comps = await get('/api/competitors');
+  const el = document.getElementById('competitors-table');
+  if (!comps.length) {
+    el.innerHTML = '<p class="empty">No competitor data yet. Open a Marketplace browse/search page and click "Scan Competitors" in the extension sidebar.</p>';
+    return;
+  }
+  el.innerHTML = `<table>
+    <thead><tr><th>Title</th><th>Price</th><th>Location</th><th>Last Seen</th><th>URL</th></tr></thead>
+    <tbody>${comps.map(c => `
+      <tr>
+        <td>${esc(c.title)}</td>
+        <td>${esc(c.price)}</td>
+        <td>${esc(c.location || '—')}</td>
+        <td>${relTime(c.last_seen)}</td>
+        <td>${c.url ? `<a href="${esc(c.url)}" target="_blank" style="color:var(--blue)">View ↗</a>` : '—'}</td>
+      </tr>`).join('')}
+    </tbody>
+  </table>`;
+}
+
+// ── AI Suggestions ────────────────────────────────────────────────────────────
+
+async function loadSuggestions() {
+  const suggestions = await get('/api/suggestions');
+  const el = document.getElementById('suggestions-list');
+  if (!suggestions.length) {
+    el.innerHTML = '<p class="empty">No suggestions yet. Create a template and click ✨ AI to generate suggestions.</p>';
+    return;
+  }
+  el.innerHTML = suggestions.map(s => `
+    <div class="suggest-box" style="margin-bottom:12px">
+      <strong>${esc(s.type)}</strong> &nbsp;<span style="color:var(--dim);font-size:11px">${relTime(s.created_at)}</span>
+      <br/><br/>${esc(s.suggestion)}
+    </div>
+  `).join('');
+}
+
+// ── Utilities ─────────────────────────────────────────────────────────────────
+
+function esc(s) {
+  return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function relTime(unix) {
+  if (!unix) return '—';
+  const diff = Math.floor(Date.now() / 1000) - unix;
+  if (diff < 60)   return 'just now';
+  if (diff < 3600) return `${Math.floor(diff/60)}m ago`;
+  if (diff < 86400) return `${Math.floor(diff/3600)}h ago`;
+  return `${Math.floor(diff/86400)}d ago`;
+}
+
+function showToast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), 2500);
+}
+
+// Initial load
+loadOverview();
+</script>
+</body>
+</html>
