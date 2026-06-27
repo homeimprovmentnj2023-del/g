@@ -349,6 +349,34 @@ window.FBMAutofill = (() => {
   // ── Location / ZIP (with autocomplete selection) ────────────────────────────
   // Marketplace usually asks for the location on a later step. This types the ZIP
   // (or city) and picks the first autocomplete suggestion, which FB requires.
+  // Fires a realistic mouse press on an element (some FB autocompletes dismiss
+  // on blur before a plain .click() registers, so we send the full sequence).
+  function realClick(el) {
+    for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
+      el.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window }));
+    }
+  }
+
+  // Broadly find the location autocomplete suggestion rows, regardless of markup.
+  function locationSuggestions() {
+    const nodes = [
+      ...document.querySelectorAll(
+        '[role="listbox"] [role="option"], ul[role="listbox"] li, [role="option"], [role="menuitem"], [role="menuitemradio"]',
+      ),
+    ];
+    const seen = new Set();
+    const out = [];
+    for (const n of nodes) {
+      if (seen.has(n)) continue; seen.add(n);
+      const txt = (n.textContent || '').trim();
+      if (!txt || txt.length > 90) continue;
+      const r = n.getBoundingClientRect();
+      if (r.width < 6 || r.height < 6) continue;
+      out.push(n);
+    }
+    return out;
+  }
+
   async function fillLocation(value) {
     if (!value) return false;
     const el = findInput(LABELS.location);
@@ -356,40 +384,50 @@ window.FBMAutofill = (() => {
 
     const zip = (String(value).match(/\d{4,}/) || [])[0];
 
-    // Picks the best location suggestion currently shown: prefer one containing
-    // the ZIP, else the first real option. Reuses the robust option collector so
-    // it works regardless of Facebook's exact suggestion markup.
-    const pickSuggestion = () => {
-      const opts = collectOptions();
-      if (!opts.length) return null;
-      if (zip) {
-        const hit = opts.find(o => (o.textContent || '').includes(zip));
-        if (hit) return hit;
+    // Type the ZIP/city.
+    el.focus();
+    setNativeValue(el, '');
+    setNativeValue(el, String(value));
+    el.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: zip ? zip.slice(-1) : 'a' }));
+    el.dispatchEvent(new KeyboardEvent('keyup',   { bubbles: true, key: zip ? zip.slice(-1) : 'a' }));
+    await sleep(1800);
+
+    // Strategy 1 — click the best visible suggestion (prefer ZIP / US-looking).
+    let opts = locationSuggestions();
+    if (!opts.length) { await sleep(1200); opts = locationSuggestions(); }
+    if (opts.length) {
+      const pick =
+        (zip && opts.find(o => (o.textContent || '').includes(zip))) ||         // exact ZIP
+        opts.find(o => /,\s*[A-Z]{2}\b/.test(o.textContent || '')) ||           // "City, ST"
+        opts.find(o => /[,·]|\d/.test(o.textContent || '')) ||                  // any place-like row
+        opts[0];                                                                // always something
+      const chosen = (pick.textContent || '').trim();
+      realClick(pick);
+      // Also click an inner node in case the row delegates the handler to a child.
+      if (pick.firstElementChild) realClick(pick.firstElementChild);
+      await sleep(900);
+      if (!locationSuggestions().length) { // dropdown closed → selection took
+        log('location', 'success', `selected "${chosen}"`);
+        return true;
       }
-      // Avoid clicking the input's own row; take the first suggestion with a comma
-      // or digits (real place names look like "10451 · Bronx, NY").
-      return opts.find(o => /[,·]|\d/.test(o.textContent || '')) || opts[0];
-    };
-
-    try {
-      el.focus();
-      setNativeValue(el, '');
-      setNativeValue(el, String(value));
-      // Nudge the autocomplete with keyboard events some widgets listen for.
-      el.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: zip ? zip.slice(-1) : 'a' }));
-      el.dispatchEvent(new KeyboardEvent('keyup',   { bubbles: true, key: zip ? zip.slice(-1) : 'a' }));
-      await sleep(1600);
-
-      const opt = await waitFor(pickSuggestion, { timeout: 5000 });
-      const chosen = (opt.textContent || '').trim();
-      opt.click();
-      await sleep(800);
-      log('location', 'success', `set location to "${chosen}"`);
-      return true;
-    } catch (_) {
-      log('location', 'warn', `typed "${value}" but found no suggestion to click`);
-      return false;
+      log('location', 'retry', `clicked "${chosen}" but dropdown still open — trying keyboard`);
     }
+
+    // Strategy 2 — keyboard: highlight first suggestion (ArrowDown) and select (Enter).
+    el.focus();
+    for (const key of [{ k: 'ArrowDown', c: 40 }, { k: 'Enter', c: 13 }]) {
+      el.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: key.k, keyCode: key.c, which: key.c }));
+      el.dispatchEvent(new KeyboardEvent('keyup',   { bubbles: true, key: key.k, keyCode: key.c, which: key.c }));
+      await sleep(500);
+    }
+    await sleep(700);
+    if (!locationSuggestions().length) {
+      log('location', 'success', `selected first suggestion via keyboard for "${value}"`);
+      return true;
+    }
+
+    log('location', 'warn', `typed "${value}" but could not lock in a suggestion`);
+    return false;
   }
 
   // ── Block detection ──────────────────────────────────────────────────────────
