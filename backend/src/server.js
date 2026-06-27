@@ -24,8 +24,13 @@ const ai      = require('./ai');
 const app  = express();
 const PORT = process.env.PORT || 3333;
 
-app.use(cors({ origin: ['https://www.facebook.com', 'http://localhost:3333', 'chrome-extension://*'] }));
-app.use(express.json());
+// Allow requests from any origin. This server only ever listens on localhost,
+// so it is not exposed to the network — and the extension's content script runs
+// on facebook.com (and various FB country subdomains), so a fixed allow-list was
+// too brittle. Reflecting the request origin makes the extension reach it reliably.
+app.use(cors());
+app.options('*', cors()); // answer CORS preflight for POST/PATCH/DELETE
+app.use(express.json({ limit: '15mb' }));
 app.use(express.static(path.join(__dirname, '..', '..', 'dashboard')));
 
 // ── Templates ─────────────────────────────────────────────────────────────────

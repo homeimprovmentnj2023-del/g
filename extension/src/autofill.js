@@ -29,11 +29,17 @@ window.FBMAutofill = (() => {
   // Broad, commonly-present Marketplace categories that accept most items/services.
   const CATEGORY_FALLBACKS = ['Miscellaneous', 'Other', 'Garage Sale', 'Home & Garden', 'Tools'];
 
-  // Phrases that mean Facebook has hard-blocked the listing — do NOT retry.
+  // Strong, specific phrases that indicate a REAL block/rejection — never the
+  // generic "weapons, counterfeits … aren't allowed … see our commerce policies"
+  // disclaimer that Facebook prints on every create form. Matched only inside
+  // actual alert/dialog popups (see detectBlock), not the static page text.
   const BLOCK_PHRASES = [
-    "can't be listed", 'cannot be listed', 'violat', 'against our', 'community standards',
-    'account restricted', 'temporarily blocked', 'not allowed', 'we removed', 'rejected',
-    'no se puede publicar', 'restringid', 'infring',
+    "goes against our commerce policies", "can't be published", 'cannot be published',
+    "can't publish your listing", "couldn't publish your", "we couldn't create your listing",
+    'this listing was rejected', 'listing has been rejected', 'we removed your',
+    'your account has been restricted', 'account is restricted', "you're temporarily blocked",
+    'temporarily blocked from', 'try again later because of',
+    'no se puede publicar', 'tu cuenta ha sido restringida', 'infringe nuestras políticas',
   ];
   // Phrases that mean a transient glitch — safe to retry.
   const TRANSIENT_PHRASES = ['something went wrong', 'try again', 'algo salió mal', 'inténtalo de nuevo'];
@@ -295,17 +301,17 @@ window.FBMAutofill = (() => {
 
   // ── Block detection ──────────────────────────────────────────────────────────
   function detectBlock() {
-    // Look inside dialogs/alerts first (most reliable), then whole page.
-    const scopes = [...document.querySelectorAll('[role="dialog"], [role="alert"]')];
-    const texts = scopes.map(s => (s.textContent || '').toLowerCase());
-    texts.push((document.body.innerText || '').toLowerCase());
-    for (const t of texts) {
+    // Only inspect actual popups (alert/dialog). The standard "counterfeits …
+    // aren't allowed … commerce policies" disclaimer lives in the static form
+    // body, so scoping to popups avoids false positives, and the phrases are
+    // strong/specific enough to mean a genuine rejection.
+    const scopes = [...document.querySelectorAll('[role="alert"], [role="dialog"]')];
+    for (const s of scopes) {
+      const t = (s.textContent || '').toLowerCase();
       const hit = BLOCK_PHRASES.find(p => t.includes(p));
       if (hit) {
-        // Grab a short reason snippet around the matched phrase.
         const idx = t.indexOf(hit);
-        const reason = t.slice(Math.max(0, idx - 40), idx + 120).trim();
-        return reason;
+        return t.slice(Math.max(0, idx - 30), idx + 140).trim();
       }
     }
     return null;
