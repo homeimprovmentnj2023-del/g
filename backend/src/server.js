@@ -222,6 +222,39 @@ app.post('/api/suggest', async (req, res) => {
 
 app.get('/api/suggestions', (_req, res) => res.json(db.getSuggestions()));
 
+// Compose a full listing (title, description, category, condition, price) from
+// minimal input, pricing against tracked competitors. Does not save.
+app.post('/api/ai/compose', async (req, res) => {
+  const { title, notes, category } = req.body || {};
+  if (!title && !notes) return res.status(400).json({ error: 'Provide a title or notes' });
+  try {
+    const composed = await ai.composeListing({ title, notes, category, competitors: db.getCompetitors() });
+    res.json(composed);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/ai/categories', (_req, res) => res.json(ai.FB_CATEGORIES));
+
+// ── Schedules (recurring auto-posting) ─────────────────────────────────────────
+
+app.get('/api/schedules', (_req, res) => res.json(db.getSchedules()));
+
+app.post('/api/schedules', (req, res) => {
+  const { name, template_ids, times, max_per_day, active } = req.body || {};
+  if (!Array.isArray(template_ids) || !template_ids.length) return res.status(400).json({ error: 'template_ids required' });
+  if (!Array.isArray(times) || !times.length) return res.status(400).json({ error: 'times required (e.g. ["09:00","18:00"])' });
+  res.status(201).json(db.createSchedule({ name, template_ids, times, max_per_day, active }));
+});
+
+app.patch('/api/schedules/:id', (req, res) => {
+  const updated = db.updateSchedule(req.params.id, req.body || {});
+  updated ? res.json(updated) : res.status(404).json({ error: 'Not found' });
+});
+
+app.delete('/api/schedules/:id', (req, res) => { db.deleteSchedule(req.params.id); res.json({ ok: true }); });
+
 // ── Analytics ─────────────────────────────────────────────────────────────────
 
 app.get('/api/analytics', (_req, res) => {
@@ -247,6 +280,52 @@ app.get('/api/analytics', (_req, res) => {
   });
 });
 
+// ── Scheduler — enqueues publish jobs on each schedule's daily time slots ──────
+// Runs every minute. The extension's background worker then posts queued jobs
+// (one at a time, with throttling). Time slots use the machine's LOCAL time,
+// which is the user's time since the backend runs on their PC.
+
+function pad(n) { return String(n).padStart(2, '0'); }
+
+function tickScheduler() {
+  const d = new Date();
+  const today = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  const hhmm  = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+
+  for (const s of db.getSchedules()) {
+    if (!s.active || !s.template_ids.length || !s.times.length) continue;
+
+    // Reset the per-day counter at midnight.
+    if (s.today !== today) { s.today = today; s.posted_today = 0; s.fired = (s.fired || []).filter(f => f.startsWith(today)); }
+
+    if (s.posted_today >= (s.max_per_day || s.times.length)) continue;
+
+    for (const slot of s.times) {
+      const key = `${today} ${slot}`;
+      // Fire when the current time has reached the slot and it hasn't fired today.
+      if (hhmm >= slot && !(s.fired || []).includes(key)) {
+        const templateId = s.template_ids[s.cursor % s.template_ids.length];
+        const tpl = db.getTemplate(templateId);
+        if (tpl) {
+          db.createJob({
+            template_id: tpl.id, title: tpl.title, price: tpl.price ? String(tpl.price) : '',
+            description: tpl.description || '', location: tpl.location || '',
+            category: tpl.category || '', condition: tpl.condition || '', photos: tpl.photos || '[]',
+          });
+          db.addLog({ job_id: null, step: 'scheduler', status: 'info', detail: `Schedule "${s.name}" queued template #${tpl.id} for slot ${slot}` });
+          s.cursor = (s.cursor + 1) % s.template_ids.length;
+          s.posted_today = (s.posted_today || 0) + 1;
+        }
+        s.fired = (s.fired || []).concat(key);
+        db.updateSchedule(s.id, s);
+        break; // one slot per tick
+      }
+    }
+  }
+}
+
+setInterval(tickScheduler, 60 * 1000);
+
 // ── Serve dashboard for any unknown route ─────────────────────────────────────
 
 app.get('*', (_req, res) => {
@@ -254,5 +333,7 @@ app.get('*', (_req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`\n  FB Marketplace Manager backend running at http://localhost:${PORT}\n`);
+  console.log(`\n  FB Marketplace Manager backend running at http://localhost:${PORT}`);
+  console.log(`  Dashboard: http://localhost:${PORT}`);
+  console.log(`  Scheduler: active (checks every minute)\n`);
 });

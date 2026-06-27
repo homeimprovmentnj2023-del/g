@@ -16,8 +16,8 @@ const now = () => Math.floor(Date.now() / 1000);
 
 const empty = {
   templates: [], listings: [], listing_events: [],
-  competitors: [], ai_suggestions: [], post_queue: [], logs: [],
-  counters: { templates: 0, listing_events: 0, ai_suggestions: 0, post_queue: 0, logs: 0 },
+  competitors: [], ai_suggestions: [], post_queue: [], logs: [], schedules: [],
+  counters: { templates: 0, listing_events: 0, ai_suggestions: 0, post_queue: 0, logs: 0, schedules: 0 },
 };
 
 let data;
@@ -185,4 +185,35 @@ module.exports = {
     return [...rows].sort((a, b) => b.id - a.id).slice(0, 500);
   },
   clearLogs: () => { data.logs = []; saveNow(); },
+
+  // ── Schedules (recurring auto-posting) ────────────────────────────────────────
+  createSchedule: (s) => {
+    const row = {
+      id:           nextId('schedules'),
+      name:         s.name || 'Daily auto-post',
+      template_ids: Array.isArray(s.template_ids) ? s.template_ids.map(Number) : [],
+      times:        Array.isArray(s.times) ? s.times : [],   // ["09:00","18:00"]
+      max_per_day:  s.max_per_day != null ? Number(s.max_per_day) : (Array.isArray(s.times) ? s.times.length : 1),
+      active:       s.active !== false,
+      cursor:       0,            // rotation index into template_ids
+      fired:        [],           // ["YYYY-MM-DD HH:MM"] slots already enqueued
+      posted_today: 0,
+      today:        '',
+      created_at:   now(),
+    };
+    data.schedules.push(row);
+    saveNow();
+    return row;
+  },
+  getSchedules: () => [...data.schedules].sort((a, b) => b.created_at - a.created_at),
+  getSchedule:  (id) => data.schedules.find(s => s.id === Number(id)) || null,
+  updateSchedule: (id, patch) => {
+    const s = data.schedules.find(x => x.id === Number(id));
+    if (!s) return null;
+    Object.assign(s, patch);
+    saveNow();
+    return s;
+  },
+  deleteSchedule: (id) => { data.schedules = data.schedules.filter(s => s.id !== Number(id)); saveNow(); },
+  saveSchedules: () => saveNow(),
 };
