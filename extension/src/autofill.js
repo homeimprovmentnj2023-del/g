@@ -190,13 +190,20 @@ window.FBMAutofill = (() => {
         || opts.find(o => (o.textContent || '').trim().toLowerCase().includes(lower));
   }
 
-  // Try the preferred value, then fall back to any accepted alternative.
-  async function selectFromList(labels, preferred, fallbacks, desc) {
+  // Returns the first non-empty selectable option currently in the popup.
+  function firstAvailableOption() {
+    const opts = [...document.querySelectorAll('[role="option"], [role="menuitem"], [role="menuitemradio"], [role="radio"]')];
+    return opts.find(o => (o.textContent || '').trim().length > 0 && o.getAttribute('aria-disabled') !== 'true');
+  }
+
+  // Try the preferred value, then fallbacks, then — if pickFirst — ANY valid
+  // option Facebook offers. This guarantees a required dropdown gets a value so
+  // the Publish button can enable without human help.
+  async function selectFromList(labels, preferred, fallbacks, desc, { pickFirst = false } = {}) {
     const candidates = [preferred, ...fallbacks].filter(Boolean);
-    if (!candidates.length) return null;
 
     const opened = await openDropdown(labels, `open ${desc}`);
-    if (!opened) { log(desc, 'warn', 'could not open dropdown — leaving for manual selection'); return null; }
+    if (!opened) { log(desc, 'warn', 'could not open dropdown'); return null; }
     await sleep(600);
 
     // Optional search box inside the popup
@@ -214,7 +221,24 @@ window.FBMAutofill = (() => {
         log(desc, 'warn', `"${value}" not available, trying next`);
       }
     }
-    log(desc, 'warn', `none of [${candidates.join(', ')}] available — leaving for manual selection`);
+
+    // Last resort: auto-pick the first option Facebook actually offers.
+    if (pickFirst) {
+      try {
+        if (search) { setNativeValue(search, ''); await sleep(700); } // clear search to reveal full list
+        const opt = await waitFor(() => firstAvailableOption(), { timeout: 3500 });
+        const chosen = (opt.textContent || '').trim();
+        opt.click();
+        await sleep(500);
+        // Some category pickers drill into a sublevel — if more options appeared, pick again.
+        const sub = firstAvailableOption();
+        if (sub && (sub.textContent || '').trim() !== chosen) { sub.click(); await sleep(400); }
+        log(desc, 'success', `no preferred match — auto-selected first available "${chosen}"`);
+        return chosen;
+      } catch (_) {
+        log(desc, 'warn', 'no options available to auto-select');
+      }
+    }
     return null;
   }
 
@@ -289,33 +313,48 @@ window.FBMAutofill = (() => {
 
   // ── Publish with hard-stop on block ──────────────────────────────────────────
   async function publish() {
-    const btn = await waitAndAct(
+    const startUrl = location.href;
+    await waitAndAct(
       () => findClickableByText(PUBLISH_WORDS, ['button']),
       el => el.click(),
       { timeout: 8000, retries: 3, desc: 'click Publish' },
     );
-    void btn;
 
-    // Race: success (redirect to your listings or item page) vs blocked (error dialog).
+    // Race: success (redirect) vs blocked (error dialog). Re-click Publish if a
+    // confirmation dialog appears, so we never wait on a second human click.
     const start = Date.now();
-    while (Date.now() - start < 25000) {
+    let reclicks = 0;
+    while (Date.now() - start < 30000) {
       const blockReason = detectBlock();
       if (blockReason) {
         log('publish', 'block', blockReason);
         return { ok: false, blocked: true, error: 'Facebook blocked this listing: ' + blockReason };
       }
-      if (/\/marketplace\/(item|you\/selling)/.test(location.href) && Date.now() - start > 1500) {
+
+      // Success: URL changed to an item or "your listings" page.
+      if (location.href !== startUrl && /\/marketplace\/(item|you\/selling)/.test(location.href) && Date.now() - start > 1500) {
         const m = location.href.match(/\/marketplace\/item\/(\d+)/);
         log('publish', 'success', m ? `listing id ${m[1]}` : 'redirected to your listings');
         return { ok: true, listingId: m ? m[1] : null, url: location.href };
       }
+
+      // A confirmation "Publish/Post" button (often inside a dialog) — click it.
+      const confirm = findClickableByText(PUBLISH_WORDS, ['button']);
+      if (confirm && reclicks < 3 && Date.now() - start > 2000) {
+        confirm.click();
+        reclicks++;
+        log('publish', 'retry', `clicked confirmation Publish (${reclicks})`);
+        await sleep(2500);
+        continue;
+      }
       await sleep(500);
     }
-    // No clear success or block — report unknown so the user can verify.
+
+    // No clear confirmation — report so the user can verify, but it may have posted.
     log('publish', 'warn', 'no confirmation detected within timeout');
     const m = location.href.match(/\/marketplace\/item\/(\d+)/);
     return { ok: !!m, listingId: m ? m[1] : null, url: location.href,
-             error: m ? undefined : 'Clicked Publish but could not confirm — please check Marketplace.' };
+             error: m ? undefined : 'Clicked Publish but could not confirm the post — please check Marketplace once.' };
   }
 
   // ── Orchestration ────────────────────────────────────────────────────────────
@@ -342,11 +381,13 @@ window.FBMAutofill = (() => {
       await fillText(LABELS.price,       template.price ? String(template.price).replace(/[^0-9.]/g, '') : '', { desc: 'fill Price' });
       await fillText(LABELS.description, template.description, { desc: 'fill Description' });
 
-      // Step 2 — category (preferred + fallback tree) and condition
+      // Step 2 — category (preferred + fallback tree, guaranteed) and condition.
+      // pickFirst:true means a required dropdown is NEVER left empty — if nothing
+      // matches, it auto-selects the first valid option so Publish can enable.
       const preferredCat = template.category || '';
       const catFallbacks = CATEGORY_FALLBACKS.filter(c => c.toLowerCase() !== preferredCat.toLowerCase());
-      await selectFromList(LABELS.category, preferredCat, catFallbacks, 'category');
-      await selectFromList(LABELS.condition, template.condition || 'Used - Good', ['Used - Good', 'Used - Fair', 'New', 'Used'], 'condition');
+      await selectFromList(LABELS.category, preferredCat, catFallbacks, 'category', { pickFirst: true });
+      await selectFromList(LABELS.condition, template.condition || 'Used - Good', ['Used - Good', 'Used - Fair', 'New', 'Used'], 'condition', { pickFirst: true });
 
       // Step 3 — images (validated, with per-image fallback)
       const photos = typeof template.photos === 'string' ? safeJSON(template.photos) : (template.photos || []);
@@ -354,28 +395,34 @@ window.FBMAutofill = (() => {
 
       await sleep(800);
 
-      // Step 4 — advance through any Next steps
-      for (let step = 0; step < 4; step++) {
+      // Step 4 — drive to the Publish button: click Next through intermediate
+      // steps, and if we get stuck, re-satisfy any required dropdown by
+      // auto-selecting an option, then try again. No human ever needed.
+      for (let step = 0; step < 6; step++) {
         const block = detectBlock();
-        if (block) { log('navigate', 'block', block); return { ok: false, blocked: true, error: 'Facebook blocked this listing: ' + block }; }
+        if (block) { log('navigate', 'block', block); await flushLogs(); return { ok: false, blocked: true, error: 'Facebook blocked this listing: ' + block }; }
 
         if (findClickableByText(PUBLISH_WORDS, ['button'])) break; // ready to publish
+
         const next = findClickableByText(NEXT_WORDS, ['button']);
         if (next) {
           await waitAndAct(() => findClickableByText(NEXT_WORDS, ['button']), el => el.click(),
             { timeout: 5000, retries: 2, desc: `click Next (step ${step + 1})`, optional: true });
           await sleep(1500);
-        } else break;
+          continue;
+        }
+
+        // Neither Next nor Publish is enabled → a required field is still empty.
+        // Force-fill the usual culprits (Category / Condition) with the first option.
+        log('navigate', 'retry', 'Next/Publish not enabled — auto-filling required dropdowns');
+        await selectFromList(LABELS.category,  preferredCat, catFallbacks, 'category',  { pickFirst: true });
+        await selectFromList(LABELS.condition, template.condition || 'Used - Good', ['Used - Good', 'New', 'Used'], 'condition', { pickFirst: true });
+        await sleep(1200);
       }
 
-      // Step 5 — publish (hard-stop on block)
-      if (!findClickableByText(PUBLISH_WORDS, ['button'])) {
-        const msg = 'Reached the form but the Publish button is not available — a required field (often Category or Condition) still needs your input. Everything else is filled; please complete it and press Publish.';
-        log('publish', 'warn', msg);
-        return { ok: false, needsHuman: true, error: msg };
-      }
+      // Step 5 — publish (publish() retries the click and hard-stops on a block)
       const result = await publish();
-      log('done', result.ok ? 'success' : 'error', result.error || 'published');
+      log('done', result.ok ? 'success' : (result.blocked ? 'block' : 'error'), result.error || 'published');
       await flushLogs();
       return result;
     } catch (err) {
