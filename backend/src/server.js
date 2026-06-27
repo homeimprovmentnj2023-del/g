@@ -155,6 +155,20 @@ app.patch('/api/publish/:id', (req, res) => {
   res.json({ ok: true });
 });
 
+// ── Logs (automation action + error log) ──────────────────────────────────────
+
+// Accept a single log entry or an array (the extension batches them).
+app.post('/api/logs', (req, res) => {
+  const body = req.body;
+  const entries = Array.isArray(body) ? body : [body];
+  entries.forEach(e => db.addLog(e));
+  res.json({ ok: true, count: entries.length });
+});
+
+app.get('/api/logs', (req, res) => res.json(db.getLogs(req.query.jobId)));
+
+app.delete('/api/logs', (_req, res) => { db.clearLogs(); res.json({ ok: true }); });
+
 // ── AI Suggestions ────────────────────────────────────────────────────────────
 
 app.post('/api/suggest', async (req, res) => {

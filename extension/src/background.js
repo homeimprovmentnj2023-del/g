@@ -89,9 +89,21 @@ async function processNextQueueJob() {
 
   try {
     const result = await runPublishJob(job);
-    await patchJob(job.id, { status: result.ok ? 'done' : 'failed', result: JSON.stringify(result) });
 
-    if (result.ok) {
+    // Map the automation outcome to a job status.
+    let status = 'failed';
+    if (result.ok) status = 'done';
+    else if (result.blocked) status = 'blocked';        // Facebook hard-stopped — do not retry
+    else if (result.needsHuman) status = 'needs_human';  // a required field needs the user
+    await patchJob(job.id, { status, result: JSON.stringify(result) });
+
+    if (status === 'needs_human' || status === 'blocked') {
+      chrome.notifications.create(`publish-attn-${job.id}`, {
+        type: 'basic', iconUrl: '../icons/icon48.png',
+        title: status === 'blocked' ? 'Facebook Blocked Listing' : 'Action Needed',
+        message: `"${job.title}": ${result.error || 'needs your attention'}`,
+      });
+    } else if (result.ok) {
       // Save the new listing to backend
       await fetch(`${BACKEND}/api/listings`, {
         method: 'POST',
@@ -145,11 +157,13 @@ async function runPublishJob(job) {
 
       // Build template object from job fields
       const template = {
+        __jobId:     job.id,           // correlate automation logs with this job
         title:       job.title,
         price:       job.price,
         description: job.description,
         location:    job.location,
         category:    job.category,
+        condition:   job.condition,
         photos:      job.photos || '[]',
       };
 
@@ -162,10 +176,18 @@ async function runPublishJob(job) {
         args: [template],
       });
 
-      chrome.tabs.remove(tab.id);
+      const result = results?.[0]?.result || { ok: false, error: 'No result from content script' };
+
+      // Keep the tab OPEN when the user needs to finish manually (e.g. pick a
+      // required Category/Condition). Otherwise close it.
+      if (result.needsHuman) {
+        chrome.tabs.update(tab.id, { active: true }).catch(() => {});
+      } else {
+        chrome.tabs.remove(tab.id).catch(() => {});
+      }
       publishTabId = null;
 
-      resolve(results?.[0]?.result || { ok: false, error: 'No result from content script' });
+      resolve(result);
     } catch (err) {
       if (publishTabId !== null) {
         chrome.tabs.remove(publishTabId).catch(() => {});

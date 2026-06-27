@@ -68,6 +68,7 @@
     <button data-panel="competitors">Competitors</button>
     <button data-panel="suggestions">AI Suggestions</button>
     <button data-panel="queue">Publish Queue</button>
+    <button data-panel="logs">Logs</button>
   </nav>
 </header>
 
@@ -133,6 +134,21 @@
         Make sure Chrome is open and you are logged in to Facebook.
       </p>
       <div id="queue-table"></div>
+    </section>
+  </div>
+
+  <!-- Logs -->
+  <div id="panel-logs" class="panel">
+    <section>
+      <div class="toolbar">
+        <h2>Automation Logs</h2>
+        <button class="btn" id="btn-refresh-logs">Refresh</button>
+        <button class="btn btn-danger" id="btn-clear-logs" style="margin-left:4px">Clear</button>
+      </div>
+      <p style="color:var(--dim);font-size:12px;margin-bottom:12px">
+        Every action and error from the listing automation is recorded here — useful for seeing exactly where a publish stopped.
+      </p>
+      <div id="logs-table"></div>
     </section>
   </div>
 
@@ -227,6 +243,7 @@ function loadPanel(name) {
   if (name === 'competitors')  loadCompetitors();
   if (name === 'suggestions')  loadSuggestions();
   if (name === 'queue')        loadQueue();
+  if (name === 'logs')         loadLogs();
 }
 
 // ── Overview ──────────────────────────────────────────────────────────────────
@@ -423,8 +440,45 @@ function showToast(msg) {
 
 // ── Publish Queue ─────────────────────────────────────────────────────────────
 
-const STATUS_COLORS = { pending: '#e2e3e5', running: '#fff3cd', done: '#d4edda', failed: '#f8d7da' };
-const STATUS_TEXT   = { pending: '#383d41', running: '#856404', done: '#155724',  failed: '#721c24' };
+const STATUS_COLORS = { pending: '#e2e3e5', running: '#fff3cd', done: '#d4edda', failed: '#f8d7da', blocked: '#f8d7da', needs_human: '#ffe5b4' };
+const STATUS_TEXT   = { pending: '#383d41', running: '#856404', done: '#155724',  failed: '#721c24', blocked: '#721c24', needs_human: '#8a5a00' };
+
+// ── Logs ──────────────────────────────────────────────────────────────────────
+
+const LOG_COLORS = { success: '#155724', error: '#721c24', block: '#721c24', warn: '#8a5a00', retry: '#8a5a00', info: '#65676b' };
+
+async function loadLogs() {
+  const logs = await get('/api/logs');
+  const el = document.getElementById('logs-table');
+  if (!logs.length) {
+    el.innerHTML = '<p class="empty">No logs yet. Run a publish from the Queue or the extension sidebar.</p>';
+    return;
+  }
+  el.innerHTML = `<table>
+    <thead><tr><th>Time</th><th>Job</th><th>Step</th><th>Status</th><th>Detail</th></tr></thead>
+    <tbody>${logs.map(l => `
+      <tr>
+        <td style="white-space:nowrap;color:var(--dim)">${relTime(l.at)}</td>
+        <td>${l.job_id != null ? '#' + l.job_id : '—'}</td>
+        <td>${esc(l.step)}</td>
+        <td><span class="badge" style="background:transparent;color:${LOG_COLORS[l.status] || '#333'};font-weight:600">${esc(l.status)}</span></td>
+        <td style="color:#333">${esc(l.detail)}</td>
+      </tr>`).join('')}
+    </tbody>
+  </table>`;
+}
+
+document.getElementById('btn-refresh-logs').onclick = loadLogs;
+document.getElementById('btn-clear-logs').onclick = async () => {
+  if (!confirm('Clear all logs?')) return;
+  await del('/api/logs');
+  loadLogs();
+};
+
+// Auto-refresh logs every 5s when on the logs panel
+setInterval(() => {
+  if (document.getElementById('panel-logs').classList.contains('active')) loadLogs();
+}, 5000);
 
 async function loadQueue() {
   const jobs = await get('/api/publish/queue');

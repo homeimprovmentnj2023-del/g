@@ -16,8 +16,8 @@ const now = () => Math.floor(Date.now() / 1000);
 
 const empty = {
   templates: [], listings: [], listing_events: [],
-  competitors: [], ai_suggestions: [], post_queue: [],
-  counters: { templates: 0, listing_events: 0, ai_suggestions: 0, post_queue: 0 },
+  competitors: [], ai_suggestions: [], post_queue: [], logs: [],
+  counters: { templates: 0, listing_events: 0, ai_suggestions: 0, post_queue: 0, logs: 0 },
 };
 
 let data;
@@ -150,4 +150,27 @@ module.exports = {
     if (j) { j.status = status; j.result = result || null; j.updated_at = now(); }
     saveNow();
   },
+
+  // ── Logs (action + error log from the automation) ─────────────────────────────
+  addLog: (entry) => {
+    const row = {
+      id:      nextId('logs'),
+      job_id:  entry.job_id != null ? entry.job_id : null,
+      step:    entry.step || '',
+      status:  entry.status || 'info',   // info | success | retry | warn | error | block
+      detail:  entry.detail || '',
+      at:      entry.at || now(),
+    };
+    data.logs.push(row);
+    // Keep only the most recent 2000 log lines.
+    if (data.logs.length > 2000) data.logs = data.logs.slice(-2000);
+    save();
+    return row;
+  },
+  getLogs: (jobId) => {
+    let rows = data.logs;
+    if (jobId != null) rows = rows.filter(l => String(l.job_id) === String(jobId));
+    return [...rows].sort((a, b) => b.id - a.id).slice(0, 500);
+  },
+  clearLogs: () => { data.logs = []; saveNow(); },
 };
