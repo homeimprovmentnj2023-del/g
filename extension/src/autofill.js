@@ -189,63 +189,110 @@ window.FBMAutofill = (() => {
     );
   }
 
-  function findOption(text) {
+  // Collect clickable option rows in whatever popup Facebook opened. FB doesn't
+  // always use [role=option]; categories are often plain clickable rows inside a
+  // menu/dialog/listbox, so we cast a wide net and keep only visible, short-text,
+  // clickable elements.
+  function collectOptions() {
+    const direct = [
+      ...document.querySelectorAll(
+        '[role="listbox"] [role="option"], [role="menu"] [role="menuitem"], [role="menu"] [role="menuitemradio"], ' +
+        'ul[role="listbox"] li, [role="option"], [role="menuitem"], [role="menuitemradio"], [role="radio"]',
+      ),
+    ];
+    let opts = direct;
+    if (!opts.length) {
+      // Fallback: clickable rows inside any popup container.
+      const popups = document.querySelectorAll('[role="dialog"], [role="menu"], [role="listbox"]');
+      const rows = [];
+      popups.forEach(p => rows.push(...p.querySelectorAll('div[role="button"], a[role], div[tabindex], li')));
+      opts = rows;
+    }
+    const NON_OPTION = ['cancel', 'close', 'back', 'done', 'save', 'next', 'publish',
+      'search', 'edit', 'remove', 'clear', 'x', '✕', 'siguiente', 'cancelar', 'cerrar', 'atrás'];
+    const seen = new Set();
+    return opts.filter(o => {
+      if (seen.has(o)) return false; seen.add(o);
+      if (o.getAttribute('aria-disabled') === 'true') return false;
+      const txt = (o.textContent || '').trim();
+      if (!txt || txt.length > 60) return false;
+      if (NON_OPTION.includes(txt.toLowerCase())) return false;
+      const al = (o.getAttribute('aria-label') || '').toLowerCase();
+      if (NON_OPTION.some(w => al === w)) return false;
+      const r = o.getBoundingClientRect();
+      return r.width > 4 && r.height > 4;
+    });
+  }
+
+  function matchOption(text) {
+    if (!text) return null;
     const lower = text.toLowerCase();
-    const opts = [...document.querySelectorAll('[role="option"], [role="menuitem"], [role="menuitemradio"], [role="radio"]')];
+    const opts = collectOptions();
     return opts.find(o => (o.textContent || '').trim().toLowerCase() === lower)
         || opts.find(o => (o.textContent || '').trim().toLowerCase().includes(lower));
   }
 
-  // Returns the first non-empty selectable option currently in the popup.
-  function firstAvailableOption() {
-    const opts = [...document.querySelectorAll('[role="option"], [role="menuitem"], [role="menuitemradio"], [role="radio"]')];
-    return opts.find(o => (o.textContent || '').trim().length > 0 && o.getAttribute('aria-disabled') !== 'true');
-  }
+  // Has the picker closed? (no more option rows visible)
+  function pickerOpen() { return collectOptions().length > 0; }
 
-  // Try the preferred value, then fallbacks, then — if pickFirst — ANY valid
-  // option Facebook offers. This guarantees a required dropdown gets a value so
-  // the Publish button can enable without human help.
+  // Try preferred + fallbacks, then — if pickFirst — ANY option. Keeps clicking
+  // through sub-levels until the picker closes, so a required dropdown always
+  // ends up with a value. Since any category/condition is acceptable, this never
+  // needs a human.
   async function selectFromList(labels, preferred, fallbacks, desc, { pickFirst = false } = {}) {
     const candidates = [preferred, ...fallbacks].filter(Boolean);
 
     const opened = await openDropdown(labels, `open ${desc}`);
     if (!opened) { log(desc, 'warn', 'could not open dropdown'); return null; }
-    await sleep(600);
+    await sleep(800);
 
-    // Optional search box inside the popup
     const search = document.querySelector('input[type="search"], [role="dialog"] input, input[aria-label*="Search" i]');
 
+    // 1) Try to match a preferred/fallback value by typing (if searchable) or scanning.
     for (const value of candidates) {
-      try {
-        if (search) { setNativeValue(search, value); await sleep(600); }
-        const opt = await waitFor(() => findOption(value), { timeout: 2500 });
+      if (search) { setNativeValue(search, value); await sleep(700); }
+      const opt = matchOption(value);
+      if (opt) {
+        const chosen = (opt.textContent || '').trim();
         opt.click();
-        await sleep(400);
-        log(desc, 'success', `selected "${value}"${value === preferred ? '' : ' (fallback)'}`);
-        return value;
-      } catch (_) {
-        log(desc, 'warn', `"${value}" not available, trying next`);
+        await sleep(700);
+        // Drill through any sub-levels until the picker closes.
+        await drillToClose(desc);
+        log(desc, 'success', `selected "${chosen}"`);
+        return chosen;
       }
     }
 
-    // Last resort: auto-pick the first option Facebook actually offers.
+    // 2) pickFirst — click the first available option, repeatedly through sub-levels.
     if (pickFirst) {
-      try {
-        if (search) { setNativeValue(search, ''); await sleep(700); } // clear search to reveal full list
-        const opt = await waitFor(() => firstAvailableOption(), { timeout: 3500 });
-        const chosen = (opt.textContent || '').trim();
-        opt.click();
-        await sleep(500);
-        // Some category pickers drill into a sublevel — if more options appeared, pick again.
-        const sub = firstAvailableOption();
-        if (sub && (sub.textContent || '').trim() !== chosen) { sub.click(); await sleep(400); }
-        log(desc, 'success', `no preferred match — auto-selected first available "${chosen}"`);
-        return chosen;
-      } catch (_) {
-        log(desc, 'warn', 'no options available to auto-select');
-      }
+      if (search) { setNativeValue(search, ''); await sleep(700); } // clear to reveal full list
+      const chosen = await drillToClose(desc, /* clickFirstEachLevel */ true);
+      if (chosen) { log(desc, 'success', `auto-selected "${chosen}"`); return chosen; }
+      log(desc, 'warn', 'no options available to auto-select');
     }
     return null;
+  }
+
+  // Repeatedly click the first option until the picker closes (or we run out of
+  // patience). Returns the text of the last option clicked.
+  async function drillToClose(desc, clickFirstEachLevel = false) {
+    let last = null;
+    for (let level = 0; level < 5; level++) {
+      if (!pickerOpen()) break;
+      if (level === 0 && !clickFirstEachLevel) {
+        // We already clicked an option above; just check if more levels appeared.
+        await sleep(400);
+        if (!pickerOpen()) break;
+      }
+      const opts = collectOptions();
+      if (!opts.length) break;
+      const opt = opts[0];
+      last = (opt.textContent || '').trim();
+      opt.click();
+      log(desc, 'info', `clicked option "${last}" (level ${level + 1})`);
+      await sleep(700);
+    }
+    return last;
   }
 
   // ── Images: upload from template, validate, fall back to other images ────────
