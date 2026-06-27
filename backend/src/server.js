@@ -30,8 +30,29 @@ const PORT = process.env.PORT || 3333;
 // too brittle. Reflecting the request origin makes the extension reach it reliably.
 app.use(cors());
 app.options('*', cors()); // answer CORS preflight for POST/PATCH/DELETE
-app.use(express.json({ limit: '15mb' }));
+app.use(express.json({ limit: '25mb' }));
 app.use(express.static(path.join(__dirname, '..', '..', 'dashboard')));
+
+// Stored listing photos are served from here so the extension can fetch them
+// from facebook.com (localhost is an allowed host in the extension manifest).
+const fs = require('fs');
+const PHOTO_DIR = path.join(__dirname, '..', 'data', 'photos');
+fs.mkdirSync(PHOTO_DIR, { recursive: true });
+app.use('/photos', express.static(PHOTO_DIR));
+
+// ── Photo upload (base64 data URL → saved file → localhost URL) ────────────────
+// Uses base64 JSON so we need no multipart/file-upload dependency.
+app.post('/api/photos', (req, res) => {
+  const { dataUrl } = req.body || {};
+  const m = typeof dataUrl === 'string' && dataUrl.match(/^data:(image\/[\w+.-]+);base64,(.+)$/);
+  if (!m) return res.status(400).json({ error: 'Send { dataUrl: "data:image/...;base64,..." }' });
+  const ext  = m[1].split('/')[1].replace('jpeg', 'jpg').replace(/[^\w]/g, '') || 'jpg';
+  const buf  = Buffer.from(m[2], 'base64');
+  if (buf.length > 20 * 1024 * 1024) return res.status(413).json({ error: 'Image too large (max 20MB)' });
+  const name = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
+  fs.writeFileSync(path.join(PHOTO_DIR, name), buf);
+  res.json({ url: `http://localhost:${PORT}/photos/${name}` });
+});
 
 // ── Templates ─────────────────────────────────────────────────────────────────
 
@@ -46,6 +67,11 @@ app.post('/api/templates', (req, res) => {
   const { title, price, location, category, description, photos } = req.body;
   if (!title) return res.status(400).json({ error: 'title required' });
   res.status(201).json(db.createTemplate({ title, price, location, category, description, photos }));
+});
+
+app.patch('/api/templates/:id', (req, res) => {
+  const updated = db.updateTemplate(req.params.id, req.body || {});
+  updated ? res.json(updated) : res.status(404).json({ error: 'Not found' });
 });
 
 app.delete('/api/templates/:id', (req, res) => {

@@ -299,6 +299,33 @@ window.FBMAutofill = (() => {
     return false;
   }
 
+  // ── Location / ZIP (with autocomplete selection) ────────────────────────────
+  // Marketplace usually asks for the location on a later step. This types the ZIP
+  // (or city) and picks the first autocomplete suggestion, which FB requires.
+  async function fillLocation(value) {
+    if (!value) return false;
+    const el = findInput(LABELS.location);
+    if (!el) return false; // location field not on this page
+    try {
+      el.focus();
+      setNativeValue(el, '');
+      setNativeValue(el, String(value));
+      await sleep(1200);
+      // Pick the first autocomplete suggestion (FB won't accept free text).
+      const opt = await waitFor(
+        () => document.querySelector('ul[role="listbox"] li[role="option"], ul[role="listbox"] li, [role="option"]'),
+        { timeout: 4000 },
+      );
+      opt.click();
+      await sleep(600);
+      log('location', 'success', `set location to "${value}"`);
+      return true;
+    } catch (_) {
+      log('location', 'warn', 'typed location but found no suggestion to select');
+      return false;
+    }
+  }
+
   // ── Block detection ──────────────────────────────────────────────────────────
   function detectBlock() {
     // Only inspect actual popups (alert/dialog). The standard "counterfeits …
@@ -395,18 +422,35 @@ window.FBMAutofill = (() => {
       await selectFromList(LABELS.category, preferredCat, catFallbacks, 'category', { pickFirst: true });
       await selectFromList(LABELS.condition, template.condition || 'Used - Good', ['Used - Good', 'Used - Fair', 'New', 'Used'], 'condition', { pickFirst: true });
 
-      // Step 3 — images (validated, with per-image fallback)
+      // Step 3 — images. Facebook REQUIRES at least one photo to publish.
       const photos = typeof template.photos === 'string' ? safeJSON(template.photos) : (template.photos || []);
-      await uploadImages(photos);
+      const photoOk = await uploadImages(photos);
+
+      // Location on the first page (if present)
+      await fillLocation(template.location);
 
       await sleep(800);
 
+      // If no photo could be added and the template has none, we cannot publish —
+      // Facebook won't allow it. Stop with a clear, one-time data fix message.
+      if (!photoOk && countPhotoThumbs() === 0) {
+        const msg = !photos.length
+          ? 'Facebook requires at least one photo. Add a photo to this template in the dashboard, then publish again.'
+          : 'The template photo(s) could not be uploaded. Use a different image in the dashboard, then publish again.';
+        log('images', 'error', msg);
+        await flushLogs();
+        return { ok: false, needsPhoto: true, error: msg };
+      }
+
       // Step 4 — drive to the Publish button: click Next through intermediate
-      // steps, and if we get stuck, re-satisfy any required dropdown by
-      // auto-selecting an option, then try again. No human ever needed.
+      // steps (filling the ZIP/location whenever that page appears), and if we
+      // get stuck, re-satisfy required dropdowns. No human ever needed.
       for (let step = 0; step < 6; step++) {
         const block = detectBlock();
         if (block) { log('navigate', 'block', block); await flushLogs(); return { ok: false, blocked: true, error: 'Facebook blocked this listing: ' + block }; }
+
+        // The location/ZIP step often appears after Next — fill it if shown.
+        await fillLocation(template.location);
 
         if (findClickableByText(PUBLISH_WORDS, ['button'])) break; // ready to publish
 

@@ -64,6 +64,18 @@ module.exports = {
   },
   getTemplates: () => [...data.templates].sort(byCreatedDesc),
   getTemplate:  (id) => data.templates.find(t => t.id === Number(id)) || null,
+  updateTemplate: (id, patch) => {
+    const t = data.templates.find(x => x.id === Number(id));
+    if (!t) return null;
+    if (patch.title       !== undefined) t.title       = patch.title;
+    if (patch.price       !== undefined) t.price       = patch.price !== '' && patch.price != null ? Number(patch.price) : null;
+    if (patch.location    !== undefined) t.location    = patch.location || null;
+    if (patch.category    !== undefined) t.category    = patch.category || null;
+    if (patch.description !== undefined) t.description = patch.description || null;
+    if (patch.photos      !== undefined) t.photos      = JSON.stringify(patch.photos || []);
+    saveNow();
+    return t;
+  },
   deleteTemplate: (id) => {
     data.templates = data.templates.filter(t => t.id !== Number(id));
     saveNow();

@@ -93,14 +93,16 @@ async function processNextQueueJob() {
     // Map the automation outcome to a job status.
     let status = 'failed';
     if (result.ok) status = 'done';
-    else if (result.blocked) status = 'blocked';        // Facebook hard-stopped — do not retry
-    else if (result.needsHuman) status = 'needs_human';  // a required field needs the user
+    else if (result.blocked) status = 'blocked';          // Facebook hard-stopped — do not retry
+    else if (result.needsPhoto) status = 'needs_photo';   // template has no usable image
+    else if (result.needsHuman) status = 'needs_human';   // a required field needs the user
     await patchJob(job.id, { status, result: JSON.stringify(result) });
 
-    if (status === 'needs_human' || status === 'blocked') {
+    if (status === 'needs_human' || status === 'blocked' || status === 'needs_photo') {
       chrome.notifications.create(`publish-attn-${job.id}`, {
         type: 'basic', iconUrl: '../icons/icon48.png',
-        title: status === 'blocked' ? 'Facebook Blocked Listing' : 'Action Needed',
+        title: status === 'blocked' ? 'Facebook Blocked Listing'
+             : status === 'needs_photo' ? 'Add a Photo' : 'Action Needed',
         message: `"${job.title}": ${result.error || 'needs your attention'}`,
       });
     } else if (result.ok) {

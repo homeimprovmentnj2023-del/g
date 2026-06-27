@@ -193,6 +193,9 @@
     <label>Location / ZIP</label><input id="tmpl-location" placeholder="e.g. 07001 or Newark NJ" />
     <label>Category</label><input id="tmpl-category" placeholder="e.g. Electronics, Furniture" />
     <label>Description</label><textarea id="tmpl-desc" placeholder="Describe the item…"></textarea>
+    <label>Photos <span style="color:var(--red)">(required by Facebook)</span></label>
+    <input id="tmpl-photo-file" type="file" accept="image/*" multiple />
+    <div id="tmpl-photo-thumbs" style="display:flex;gap:6px;flex-wrap:wrap;margin:8px 0"></div>
     <div id="suggest-area"></div>
     <div class="modal-actions">
       <button class="btn" id="btn-suggest-title">✨ Suggest Title</button>
@@ -293,21 +296,62 @@ async function loadTemplates() {
     return;
   }
   el.innerHTML = `<table>
-    <thead><tr><th>Title</th><th>Price</th><th>Location</th><th>Category</th><th>Actions</th></tr></thead>
-    <tbody>${templates.map(t => `
-      <tr>
+    <thead><tr><th>Title</th><th>Price</th><th>Location</th><th>Category</th><th>Photos</th><th>Actions</th></tr></thead>
+    <tbody>${templates.map(t => {
+      const nPhotos = photoCount(t.photos);
+      return `<tr>
         <td>${esc(t.title)}</td>
         <td>$${esc(t.price)}</td>
         <td>${esc(t.location || '—')}</td>
         <td>${esc(t.category || '—')}</td>
+        <td>${nPhotos ? '📷 ' + nPhotos : '<span style="color:var(--red)">none</span>'}</td>
         <td style="white-space:nowrap">
-          <button class="btn btn-sm" style="color:#2e7d32;border-color:#2e7d32" onclick="publishTemplateNow(${t.id})">Publish</button>
-          <button class="btn btn-sm btn-primary" style="margin-left:4px" onclick="suggestForTemplate(${t.id})">✨ AI</button>
+          <button class="btn btn-sm" style="color:#1877f2;border-color:#1877f2" onclick="addPhotosToTemplate(${t.id})">📷 Add Photo</button>
+          <button class="btn btn-sm" style="color:#2e7d32;border-color:#2e7d32;margin-left:4px" onclick="publishTemplateNow(${t.id})">Publish</button>
           <button class="btn btn-sm btn-danger" style="margin-left:4px" onclick="deleteTemplate(${t.id})">Delete</button>
         </td>
-      </tr>`).join('')}
+      </tr>`;
+    }).join('')}
     </tbody>
   </table>`;
+}
+
+function photoCount(photos) {
+  try { return (JSON.parse(photos || '[]') || []).length; } catch (_) { return 0; }
+}
+
+// Hidden file input reused for "Add Photo" on existing templates.
+let addPhotoTargetId = null;
+function addPhotosToTemplate(id) {
+  addPhotoTargetId = id;
+  let input = document.getElementById('hidden-add-photo');
+  if (!input) {
+    input = document.createElement('input');
+    input.type = 'file'; input.accept = 'image/*'; input.multiple = true;
+    input.id = 'hidden-add-photo'; input.style.display = 'none';
+    document.body.appendChild(input);
+    input.onchange = async (e) => {
+      const files = [...e.target.files];
+      e.target.value = '';
+      const tpl = await get(`/api/templates/${addPhotoTargetId}`);
+      let photos = [];
+      try { photos = JSON.parse(tpl.photos || '[]'); } catch (_) {}
+      for (const f of files) {
+        try {
+          showToast(`Uploading ${f.name}…`);
+          const dataUrl = await fileToDataUrl(f);
+          const res = await post('/api/photos', { dataUrl });
+          if (res.url) photos.push(res.url);
+        } catch (_) { showToast('Could not upload ' + f.name); }
+      }
+      await fetch(`/api/templates/${addPhotoTargetId}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ photos }),
+      });
+      showToast('Photos added!');
+      loadTemplates();
+    };
+  }
+  input.click();
 }
 
 async function deleteTemplate(id) {
@@ -331,8 +375,47 @@ async function suggestForTemplate(id) {
   alert('Suggested titles:\n\n' + suggestion);
 }
 
+// Photos picked in the New Template modal (uploaded to the backend, stored as URLs)
+let tmplPhotos = [];
+
+function renderTmplThumbs() {
+  const box = document.getElementById('tmpl-photo-thumbs');
+  box.innerHTML = tmplPhotos.map((url, i) =>
+    `<div style="position:relative">
+       <img src="${esc(url)}" style="width:54px;height:54px;object-fit:cover;border-radius:6px;border:1px solid var(--border)" />
+       <button onclick="removeTmplPhoto(${i})" style="position:absolute;top:-6px;right:-6px;background:var(--red);color:#fff;border:none;border-radius:50%;width:18px;height:18px;cursor:pointer;font-size:11px;line-height:1">✕</button>
+     </div>`).join('');
+}
+function removeTmplPhoto(i) { tmplPhotos.splice(i, 1); renderTmplThumbs(); }
+
+function fileToDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(r.result);
+    r.onerror = reject;
+    r.readAsDataURL(file);
+  });
+}
+
+document.getElementById('tmpl-photo-file').onchange = async (e) => {
+  const files = [...e.target.files];
+  for (const f of files) {
+    try {
+      showToast(`Uploading ${f.name}…`);
+      const dataUrl = await fileToDataUrl(f);
+      const res = await post('/api/photos', { dataUrl });
+      if (res.url) { tmplPhotos.push(res.url); renderTmplThumbs(); }
+      else showToast('Upload failed: ' + (res.error || 'unknown'));
+    } catch (_) { showToast('Could not read ' + f.name); }
+  }
+  e.target.value = '';
+};
+
 // New template modal
 document.getElementById('btn-new-template').onclick = () => {
+  tmplPhotos = [];
+  renderTmplThumbs();
+  ['tmpl-title','tmpl-price','tmpl-location','tmpl-category','tmpl-desc'].forEach(id => document.getElementById(id).value = '');
   document.getElementById('modal-template').classList.add('open');
   document.getElementById('suggest-area').innerHTML = '';
 };
@@ -341,12 +424,14 @@ document.getElementById('btn-cancel-template').onclick = () => document.getEleme
 document.getElementById('btn-save-template').onclick = async () => {
   const title = document.getElementById('tmpl-title').value.trim();
   if (!title) { showToast('Title is required'); return; }
+  if (!tmplPhotos.length && !confirm('No photo added. Facebook requires at least one photo to publish — save anyway?')) return;
   await post('/api/templates', {
     title,
     price:       document.getElementById('tmpl-price').value,
     location:    document.getElementById('tmpl-location').value,
     category:    document.getElementById('tmpl-category').value,
     description: document.getElementById('tmpl-desc').value,
+    photos:      tmplPhotos,
   });
   document.getElementById('modal-template').classList.remove('open');
   loadTemplates();
