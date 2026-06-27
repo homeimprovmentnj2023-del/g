@@ -372,6 +372,29 @@ window.FBMAutofill = (() => {
     } catch (_) {}
   }
 
+  // US state abbreviations and full names — used to keep only United States
+  // location suggestions (the same ZIP can exist in other countries).
+  const US_STATE_ABBR = ['AL','AK','AZ','AR','CA','CO','CT','DE','FL','GA','HI','ID','IL','IN','IA',
+    'KS','KY','LA','ME','MD','MA','MI','MN','MS','MO','MT','NE','NV','NH','NJ','NM','NY','NC','ND',
+    'OH','OK','OR','PA','RI','SC','SD','TN','TX','UT','VT','VA','WA','WV','WI','WY','DC'];
+  const US_STATE_NAMES = ['alabama','alaska','arizona','arkansas','california','colorado','connecticut',
+    'delaware','florida','georgia','hawaii','idaho','illinois','indiana','iowa','kansas','kentucky',
+    'louisiana','maine','maryland','massachusetts','michigan','minnesota','mississippi','missouri',
+    'montana','nebraska','nevada','new hampshire','new jersey','new mexico','new york','north carolina',
+    'north dakota','ohio','oklahoma','oregon','pennsylvania','rhode island','south carolina','south dakota',
+    'tennessee','texas','utah','vermont','virginia','washington','west virginia','wisconsin','wyoming',
+    'district of columbia'];
+
+  function isUSLocation(text) {
+    const t = (text || '').trim();
+    if (!t) return false;
+    if (/\bunited states\b|\bu\.?s\.?a\.?\b/i.test(t)) return true;
+    if (US_STATE_ABBR.some(a => new RegExp(`(,|\\s|·)\\s*${a}\\b`).test(t))) return true; // ", NY" / "· NJ"
+    const low = t.toLowerCase();
+    if (US_STATE_NAMES.some(n => low.includes(n))) return true;
+    return false;
+  }
+
   // Broadly find the location autocomplete suggestion rows, regardless of markup.
   function locationSuggestions() {
     const nodes = [
@@ -407,41 +430,51 @@ window.FBMAutofill = (() => {
     el.dispatchEvent(new KeyboardEvent('keyup',   { bubbles: true, key: zip ? zip.slice(-1) : 'a' }));
     await sleep(1800);
 
-    // Strategy 1 — click the best visible suggestion (prefer ZIP / US-looking).
+    // Strategy 1 — click the best US suggestion. We ONLY post in the United
+    // States, so always prefer a US row even if a same-ZIP foreign one appears.
     let opts = locationSuggestions();
     if (!opts.length) { await sleep(1200); opts = locationSuggestions(); }
     if (opts.length) {
+      const usOpts = opts.filter(o => isUSLocation(o.textContent || ''));
       const pick =
-        (zip && opts.find(o => (o.textContent || '').includes(zip))) ||         // exact ZIP
-        opts.find(o => /,\s*[A-Z]{2}\b/.test(o.textContent || '')) ||           // "City, ST"
-        opts.find(o => /[,·]|\d/.test(o.textContent || '')) ||                  // any place-like row
-        opts[0];                                                                // always something
+        (zip && usOpts.find(o => (o.textContent || '').includes(zip))) ||  // US row with the exact ZIP
+        usOpts[0] ||                                                       // any US row
+        (zip && opts.find(o => (o.textContent || '').includes(zip))) ||    // ZIP match (no US tag found)
+        opts.find(o => /,\s*[A-Z]{2}\b/.test(o.textContent || '')) ||      // "City, ST"
+        opts[0];                                                           // always something
       const chosen = (pick.textContent || '').trim();
+      const usNote = isUSLocation(chosen) ? ' [US]' : ' [no US tag detected]';
       realClick(pick);
-      // Also click an inner node in case the row delegates the handler to a child.
       if (pick.firstElementChild) realClick(pick.firstElementChild);
       await sleep(900);
-      if (!locationSuggestions().length) { // dropdown closed → selection took
-        log('location', 'success', `selected "${chosen}"`);
+      if (!locationSuggestions().length) {
+        log('location', 'success', `selected "${chosen}"${usNote}`);
         return true;
       }
       log('location', 'retry', `clicked "${chosen}" but dropdown still open — trying keyboard`);
     }
 
-    // Strategy 2 — keyboard: highlight first suggestion (ArrowDown) and select (Enter).
+    // Strategy 2 — keyboard: step through suggestions and pick the first US one.
+    // Each ArrowDown highlights the next row; we Enter once we're on a US row.
     el.focus();
-    for (const key of [{ k: 'ArrowDown', c: 40 }, { k: 'Enter', c: 13 }]) {
-      el.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: key.k, keyCode: key.c, which: key.c }));
-      el.dispatchEvent(new KeyboardEvent('keyup',   { bubbles: true, key: key.k, keyCode: key.c, which: key.c }));
-      await sleep(500);
+    const n = Math.max(1, opts.length);
+    for (let i = 0; i < n; i++) {
+      el.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'ArrowDown', keyCode: 40, which: 40 }));
+      el.dispatchEvent(new KeyboardEvent('keyup',   { bubbles: true, key: 'ArrowDown', keyCode: 40, which: 40 }));
+      await sleep(350);
+      // If the currently highlighted/aria-selected row is US, select it.
+      const active = document.querySelector('[aria-selected="true"], [aria-activedescendant], .a11y-active') ;
+      if (active && isUSLocation(active.textContent || '')) break;
     }
-    await sleep(700);
+    el.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'Enter', keyCode: 13, which: 13 }));
+    el.dispatchEvent(new KeyboardEvent('keyup',   { bubbles: true, key: 'Enter', keyCode: 13, which: 13 }));
+    await sleep(800);
     if (!locationSuggestions().length) {
-      log('location', 'success', `selected first suggestion via keyboard for "${value}"`);
+      log('location', 'success', `selected a suggestion via keyboard for "${value}"`);
       return true;
     }
 
-    log('location', 'warn', `typed "${value}" but could not lock in a suggestion`);
+    log('location', 'warn', `typed "${value}" but could not lock in a US suggestion`);
     return false;
   }
 
