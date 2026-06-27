@@ -51,8 +51,9 @@ window.FBMAutofill = (() => {
 
   function log(step, status, detail = '') {
     const entry = { job_id: currentJobId, step, status, detail: String(detail).slice(0, 500), at: Math.floor(Date.now() / 1000) };
-    // Console for live debugging
-    const tag = status === 'error' ? 'error' : status === 'warn' ? 'warn' : 'log';
+    // Console for live debugging. Use warn/log only (never console.error) so our
+    // normal progress logs don't show up in Chrome's extension "Errors" page.
+    const tag = (status === 'error' || status === 'warn' || status === 'block') ? 'warn' : 'log';
     console[tag](`[FBM][${step}] ${status}${detail ? ' — ' + detail : ''}`);
     logBuffer.push(entry);
     if (!flushTimer) flushTimer = setTimeout(flushLogs, 400);
