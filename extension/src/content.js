@@ -9,6 +9,24 @@ const BACKEND = 'http://localhost:3333';
   listenForMessages();
 })();
 
+// ── Safe backend helper ────────────────────────────────────────────────────────
+// Every call to the local backend goes through here so a network failure (backend
+// closed / not started) NEVER throws an uncaught error — it returns {ok:false}
+// and shows a friendly message instead.
+
+async function api(path, options, { quiet = false } = {}) {
+  try {
+    const res = await fetch(`${BACKEND}${path}`, options);
+    const data = await res.json().catch(() => null);
+    return { ok: res.ok, status: res.status, data };
+  } catch (err) {
+    if (!quiet) {
+      showToast('Can’t reach the local app. Keep the backend window open (run start.bat).');
+    }
+    return { ok: false, error: err.message };
+  }
+}
+
 // ── Sidebar ───────────────────────────────────────────────────────────────────
 
 function injectSidebar() {
@@ -75,13 +93,8 @@ function wireupSidebar(sidebar) {
     };
   });
 
-  // Listings scan
-  sidebar.querySelector('#fbm-scan-listings').onclick = () => scanAndReportListings(sidebar);
-
-  // Competitors scan
-  sidebar.querySelector('#fbm-scan-competitors').onclick = () => scanAndReportCompetitors(sidebar);
-
-  // New template
+  sidebar.querySelector('#fbm-scan-listings').onclick = () => scanAndReportListings(sidebar).catch(reportErr);
+  sidebar.querySelector('#fbm-scan-competitors').onclick = () => scanAndReportCompetitors(sidebar).catch(reportErr);
   sidebar.querySelector('#fbm-new-template').onclick = () => openNewTemplateForm(sidebar);
 
   loadTemplates(sidebar);
@@ -92,69 +105,66 @@ function wireupSidebar(sidebar) {
 async function loadTemplates(sidebar) {
   const list = sidebar.querySelector('#fbm-template-list');
   list.innerHTML = '<p class="fbm-dim">Loading…</p>';
-  try {
-    const res = await fetch(`${BACKEND}/api/templates`);
-    const templates = await res.json();
-    if (!templates.length) {
-      list.innerHTML = '<p class="fbm-dim">No templates yet. Create one above.</p>';
-      return;
-    }
-    list.innerHTML = templates.map(t => `
-      <div class="fbm-card">
-        <strong>${escHtml(t.title)}</strong>
-        <span class="fbm-price">$${t.price}</span>
-        <div class="fbm-card-actions">
-          <button class="fbm-btn-fill"    data-id="${t.id}">Fill Form</button>
-          <button class="fbm-btn-publish" data-id="${t.id}">Publish</button>
-          <button class="fbm-btn-del"     data-id="${t.id}">Delete</button>
-        </div>
-      </div>
-    `).join('');
 
-    list.querySelectorAll('.fbm-btn-fill').forEach(btn => {
-      btn.onclick = () => fillFromTemplate(btn.dataset.id, sidebar);
-    });
-    list.querySelectorAll('.fbm-btn-publish').forEach(btn => {
-      btn.onclick = () => publishTemplate(btn.dataset.id, sidebar);
-    });
-    list.querySelectorAll('.fbm-btn-del').forEach(btn => {
-      btn.onclick = () => deleteTemplate(btn.dataset.id, sidebar);
-    });
-  } catch (_) {
-    list.innerHTML = '<p class="fbm-dim">Backend offline. Start it with: cd backend && node src/server.js</p>';
+  const res = await api('/api/templates', undefined, { quiet: true });
+  if (!res.ok) {
+    list.innerHTML = '<p class="fbm-dim">Backend offline. Open the backend window (run start.bat) and reopen this sidebar.</p>';
+    return;
   }
+  const templates = res.data || [];
+  if (!templates.length) {
+    list.innerHTML = '<p class="fbm-dim">No templates yet. Create one above.</p>';
+    return;
+  }
+  list.innerHTML = templates.map(t => `
+    <div class="fbm-card">
+      <strong>${escHtml(t.title)}</strong>
+      <span class="fbm-price">$${escHtml(t.price)}</span>
+      <div class="fbm-card-actions">
+        <button class="fbm-btn-fill"    data-id="${t.id}">Fill Form</button>
+        <button class="fbm-btn-publish" data-id="${t.id}">Publish</button>
+        <button class="fbm-btn-del"     data-id="${t.id}">Delete</button>
+      </div>
+    </div>
+  `).join('');
+
+  list.querySelectorAll('.fbm-btn-fill').forEach(btn => {
+    btn.onclick = () => fillFromTemplate(btn.dataset.id, sidebar).catch(reportErr);
+  });
+  list.querySelectorAll('.fbm-btn-publish').forEach(btn => {
+    btn.onclick = () => publishTemplate(btn.dataset.id, sidebar).catch(reportErr);
+  });
+  list.querySelectorAll('.fbm-btn-del').forEach(btn => {
+    btn.onclick = () => deleteTemplate(btn.dataset.id, sidebar).catch(reportErr);
+  });
 }
 
 async function fillFromTemplate(id, sidebar) {
-  const res = await fetch(`${BACKEND}/api/templates/${id}`);
-  const template = await res.json();
-  const result = await window.FBMAutofill.fill(template);
+  const res = await api(`/api/templates/${id}`);
+  if (!res.ok) return;
+  const result = await window.FBMAutofill.fill(res.data);
   showToast(result.ok ? 'Form filled!' : `Error: ${result.error}`);
 }
 
 async function deleteTemplate(id, sidebar) {
   if (!confirm('Delete this template?')) return;
-  await fetch(`${BACKEND}/api/templates/${id}`, { method: 'DELETE' });
+  await api(`/api/templates/${id}`, { method: 'DELETE' });
   loadTemplates(sidebar);
 }
 
 async function publishTemplate(id, sidebar) {
   if (!confirm('Auto-post this template to Facebook Marketplace now?')) return;
   showToast('Queuing publish job…');
-  try {
-    const res = await fetch(`${BACKEND}/api/publish`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ templateId: id }),
-    });
-    const job = await res.json();
-    if (job.error) { showToast('Error: ' + job.error); return; }
-    showToast('Job queued! FB will open and post automatically.');
-    // Trigger immediate processing without waiting for the next alarm
-    chrome.runtime.sendMessage({ type: 'PUBLISH_NOW' });
-  } catch (_) {
-    showToast('Backend offline — start it first.');
-  }
+  const res = await api('/api/publish', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ templateId: id }),
+  });
+  if (!res.ok) return; // api() already showed the offline message
+  if (res.data && res.data.error) { showToast('Error: ' + res.data.error); return; }
+  showToast('Job queued! FB will open and post automatically.');
+  // Ask the background worker to process the queue immediately.
+  try { chrome.runtime.sendMessage({ type: 'PUBLISH_NOW' }); } catch (_) {}
 }
 
 function openNewTemplateForm(sidebar) {
@@ -173,22 +183,26 @@ function openNewTemplateForm(sidebar) {
     </div>
   `;
   sidebar.querySelector('#fbm-cancel-tmpl').onclick = () => loadTemplates(sidebar);
-  sidebar.querySelector('#fbm-save-tmpl').onclick = async () => {
-    const body = {
-      title:       document.getElementById('ftitle').value,
-      price:       document.getElementById('fprice').value,
-      location:    document.getElementById('flocation').value,
-      category:    document.getElementById('fcategory').value,
-      description: document.getElementById('fdesc').value,
-    };
-    if (!body.title) { showToast('Title is required'); return; }
-    await fetch(`${BACKEND}/api/templates`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    loadTemplates(sidebar);
+  sidebar.querySelector('#fbm-save-tmpl').onclick = () => saveNewTemplate(sidebar).catch(reportErr);
+}
+
+async function saveNewTemplate(sidebar) {
+  const body = {
+    title:       document.getElementById('ftitle').value,
+    price:       document.getElementById('fprice').value,
+    location:    document.getElementById('flocation').value,
+    category:    document.getElementById('fcategory').value,
+    description: document.getElementById('fdesc').value,
   };
+  if (!body.title) { showToast('Title is required'); return; }
+  const res = await api('/api/templates', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) return;
+  showToast('Template saved!');
+  loadTemplates(sidebar);
 }
 
 // ── Listings ──────────────────────────────────────────────────────────────────
@@ -200,18 +214,17 @@ async function scanAndReportListings(sidebar) {
     list.innerHTML = '<p class="fbm-dim">No listings found on this page.</p>';
     return;
   }
-  // Send to backend
-  await fetch(`${BACKEND}/api/listings/bulk`, {
+  await api('/api/listings/bulk', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(listings),
-  }).catch(() => {});
+  }, { quiet: true });
 
   list.innerHTML = listings.map(l => `
     <div class="fbm-card">
       <strong>${escHtml(l.title)}</strong>
       <span class="fbm-price">${escHtml(l.price)}</span>
-      <span class="fbm-id">ID: ${l.id}</span>
+      <span class="fbm-id">ID: ${escHtml(l.id)}</span>
     </div>
   `).join('');
 }
@@ -225,11 +238,11 @@ async function scanAndReportCompetitors(sidebar) {
     list.innerHTML = '<p class="fbm-dim">No competitor listings found. Browse a category first.</p>';
     return;
   }
-  await fetch(`${BACKEND}/api/competitors/bulk`, {
+  await api('/api/competitors/bulk', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(comps),
-  }).catch(() => {});
+  }, { quiet: true });
 
   list.innerHTML = comps.map(c => `
     <div class="fbm-card">
@@ -245,11 +258,11 @@ async function scanAndReportCompetitors(sidebar) {
 async function reportPageToBackend() {
   const listing = window.FBMScraper.scrapeCurrentListing();
   if (!listing) return;
-  await fetch(`${BACKEND}/api/listings`, {
+  await api('/api/listings', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(listing),
-  }).catch(() => {});
+  }, { quiet: true });
 }
 
 // ── Message listener (from background.js) ────────────────────────────────────
@@ -279,7 +292,12 @@ function listenForMessages() {
 // ── Utilities ─────────────────────────────────────────────────────────────────
 
 function escHtml(s) {
-  return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function reportErr(err) {
+  console.warn('[FBM] action failed:', err);
+  showToast('Something went wrong — see the backend window / dashboard Logs.');
 }
 
 function showToast(msg) {
