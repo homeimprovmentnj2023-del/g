@@ -25,10 +25,7 @@
       "run_at": "document_idle"
     },
     {
-      "matches": [
-        "https://www.facebook.com/marketplace/inbox*",
-        "https://www.facebook.com/marketplace/t/*"
-      ],
+      "matches": ["https://www.facebook.com/marketplace*"],
       "js": ["src/selectors.js", "src/marketplace-chat.js"],
       "run_at": "document_idle"
     }

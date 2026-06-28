@@ -17,8 +17,11 @@
 // to fix when Facebook changes its UI.
 
 (function initChatBridge() {
-  // Only run on the Marketplace inbox / a conversation thread.
-  if (!/\/marketplace\/(inbox|t\/)/.test(location.pathname)) return;
+  // Facebook is a single-page app: navigating into the inbox usually does NOT
+  // reload the page, so we can't just check the URL once at injection time.
+  // Instead we load on any /marketplace* page and activate/deactivate as the
+  // path changes (see the SPA watcher at the bottom).
+  const onChatPage = () => /\/marketplace\/(inbox|t\/)/.test(location.pathname);
 
   const BACKEND = 'http://localhost:3333';
 
@@ -61,8 +64,8 @@
   dot.style.cssText = 'width:9px;height:9px;border-radius:50%;flex:0 0 auto;background:#22c55e';
   const label = document.createElement('span');
   badge.append(dot, label);
-  const mountBadge = () => { if (!document.getElementById('fbm-bridge-badge')) document.body.appendChild(badge); };
-  document.body ? mountBadge() : window.addEventListener('DOMContentLoaded', mountBadge);
+  const mountBadge   = () => { if (document.body && !document.getElementById('fbm-bridge-badge')) document.body.appendChild(badge); };
+  const unmountBadge = () => { badge.remove(); };
 
   const COLORS = { ok: '#22c55e', busy: '#f59e0b', err: '#ef4444', idle: '#22c55e' };
   function setStatus(kind, text) {
@@ -237,16 +240,43 @@
     timer = setTimeout(() => check().catch(e => console.warn('[FBM bridge]', e)), CONFIG.debounceMs);
   }
 
-  const target = $(SEL.messageList) || document.body;
-  new MutationObserver(schedule).observe(target, { childList: true, subtree: true });
+  // ── Activate / deactivate as the SPA navigates ─────────────────────────────
+  let active = false;
+  let observer = null;
 
-  // Re-baseline when navigating between threads (FB is a SPA).
+  function activate() {
+    if (active) return;
+    active = true;
+    booted = Date.now();
+    seen.clear();
+    mountBadge();
+    setStatus('idle', CONFIG.autoSend ? 'Bridge active · auto-reply on' : 'Bridge active · review mode');
+    const target = $(SEL.messageList) || document.body;
+    observer = new MutationObserver(schedule);
+    observer.observe(target, { childList: true, subtree: true });
+    schedule();
+    console.info('[FBM bridge] active on', location.pathname, '(autoSend:', CONFIG.autoSend, ')');
+  }
+
+  function deactivate() {
+    if (!active) return;
+    active = false;
+    clearTimeout(timer);
+    observer?.disconnect();
+    observer = null;
+    unmountBadge();
+  }
+
+  // Watch for SPA path changes (Facebook doesn't reload when you open a chat).
   let lastPath = location.pathname;
   setInterval(() => {
-    if (location.pathname !== lastPath) { lastPath = location.pathname; booted = Date.now(); seen.clear(); schedule(); }
+    if (location.pathname !== lastPath) {
+      lastPath = location.pathname;
+      if (onChatPage()) { deactivate(); activate(); } else { deactivate(); }
+    } else if (onChatPage() && !active) {
+      activate();           // first time the inbox DOM becomes available
+    }
   }, 1000);
 
-  schedule();
-  setStatus('idle', CONFIG.autoSend ? 'Bridge active · auto-reply on' : 'Bridge active · review mode');
-  console.info('[FBM bridge] Marketplace → chatbot bridge active (autoSend:', CONFIG.autoSend, ')');
+  if (onChatPage()) activate();
 })();
