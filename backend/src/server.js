@@ -154,25 +154,30 @@ function genDesc(words) {
 }
 
 app.post('/api/templates/generate', (req, res) => {
-  const { titles = [], prices = [], descWords = [], photos = [], location = '', category = 'Home Improvement', count = 10 } = req.body || {};
+  const { titles = [], prices = [], descWords = [], photos = [], location = '', locations = [], category = 'Home Improvement', count = 10 } = req.body || {};
   const bases = titles.map(t => String(t).trim()).filter(Boolean);
   if (!bases.length) return res.status(400).json({ error: 'Provide at least one title seed' });
   const priceList = (prices.length ? prices : ['99']).map(p => String(p).replace(/[^0-9.]/g, '')).filter(Boolean);
   const photoList = Array.isArray(photos) ? photos : [];
-  const n = Math.min(Math.max(parseInt(count, 10) || 10, 1), 100);
+  // ZIP/locations to rotate through (one template per area, cycling).
+  const locs = (Array.isArray(locations) && locations.length) ? locations.map(String) : (location ? [String(location)] : []);
+  const n = Math.min(Math.max(parseInt(count, 10) || 10, 1), 200);
 
   const created = [];
   const seen = new Set();
   let attempts = 0;
-  while (created.length < n && attempts < n * 30) {
+  while (created.length < n && attempts < n * 40) {
     attempts++;
+    const loc = locs.length ? locs[created.length % locs.length] : '';
     const title = genTitle(bases, descWords);
-    if (seen.has(title.toLowerCase())) continue;
-    seen.add(title.toLowerCase());
+    // Allow the same title in different ZIPs, but not duplicate title+ZIP pairs.
+    const key = `${title.toLowerCase()}|${loc}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
     const tpl = db.createTemplate({
       title,
       price: priceList[Math.floor(Math.random() * priceList.length)] || '',
-      location, category,
+      location: loc, category,
       description: genDesc(descWords),
       photos: photoList.length ? [photoList[created.length % photoList.length]] : [],
     });

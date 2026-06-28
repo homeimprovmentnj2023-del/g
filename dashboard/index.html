@@ -269,10 +269,28 @@ Tub Refinishing</textarea>
     <input id="bulk-prices" value="99, 149, 199, 279, 300" />
     <label>Description words/phrases (comma separated)</label>
     <input id="bulk-descwords" value="like new, same day, best quality, shiny, white" />
+    <label>ZIP codes — rotated across templates (paste areas; only the 5-digit codes are used)</label>
+    <textarea id="bulk-locations" rows="5">South Florida: 33156 33326 33486
+Tampa: 33629 33511 33710
+Atlanta: 30327 30022 30075
+Maryland: 20854 20814 20815
+New Jersey: 07090 07960 07652
+Philadelphia: 19087 19003 19010
+Long Island: 11743 11530 11791
+Brooklyn: 11209 11234 11230
+Queens: 11375 11364 11366
+Sacramento: 95747 95608 95864
+San Jose: 95124 95118 95032
+SoCal: 92677 92647 91364
+Las Vegas: 89135 89144 89052
+Colorado: 80113 80121 80027
+Denver: 80209 80210 80111
+Chicago: 60062 60025 60521
+Dallas: 75093 75024 75025
+Houston: 77024 77057 77379</textarea>
     <div class="fbm-row" style="display:flex;gap:8px">
-      <div style="flex:1"><label>Location / ZIP</label><input id="bulk-location" placeholder="e.g. 07001" /></div>
       <div style="flex:1"><label>Category</label><input id="bulk-category" value="Home Improvement" /></div>
-      <div style="width:90px"><label>How many</label><input id="bulk-count" type="number" value="10" min="1" max="100" /></div>
+      <div style="width:120px"><label>How many</label><input id="bulk-count" type="number" value="54" min="1" max="200" /></div>
     </div>
     <label>Photos to rotate through (from library — click to select)</label>
     <div id="bulk-photos" style="display:flex;flex-wrap:wrap;gap:6px;max-height:140px;overflow:auto;border:1px solid var(--border);border-radius:6px;padding:8px;margin-bottom:12px"></div>
@@ -613,11 +631,13 @@ document.getElementById('btn-do-bulk').onclick = async () => {
   if (!titles.length) { showToast('Add at least one title seed'); return; }
   const prices = document.getElementById('bulk-prices').value.split(',').map(s => s.trim()).filter(Boolean);
   const descWords = document.getElementById('bulk-descwords').value.split(',').map(s => s.trim()).filter(Boolean);
+  // Pull every 5-digit ZIP out of the areas box (labels are ignored).
+  const locations = (document.getElementById('bulk-locations').value.match(/\b\d{5}\b/g)) || [];
   showToast('Generating templates…');
   const res = await post('/api/templates/generate', {
     titles, prices, descWords,
     photos: bulkSelectedPhotos,
-    location: document.getElementById('bulk-location').value.trim(),
+    locations,
     category: document.getElementById('bulk-category').value.trim() || 'Home Improvement',
     count: document.getElementById('bulk-count').value,
   });
