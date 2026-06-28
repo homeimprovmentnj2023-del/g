@@ -76,6 +76,24 @@ app.post('/api/photos/from-url', async (req, res) => {
   catch (err) { res.status(400).json({ error: err.message }); }
 });
 
+// Photo library — list and delete stored photos.
+app.get('/api/photos/list', (_req, res) => {
+  let files = [];
+  try {
+    files = fs.readdirSync(PHOTO_DIR)
+      .filter(f => /\.(jpe?g|png|webp|gif)$/i.test(f))
+      .map(f => ({ name: f, url: `http://localhost:${PORT}/photos/${f}`, at: fs.statSync(path.join(PHOTO_DIR, f)).mtimeMs }))
+      .sort((a, b) => b.at - a.at);
+  } catch (_) {}
+  res.json(files);
+});
+
+app.delete('/api/photos/:name', (req, res) => {
+  const name = path.basename(req.params.name); // prevent path traversal
+  try { fs.unlinkSync(path.join(PHOTO_DIR, name)); res.json({ ok: true }); }
+  catch (err) { res.status(404).json({ error: 'not found' }); }
+});
+
 // ── Templates ─────────────────────────────────────────────────────────────────
 
 app.get('/api/templates', (_req, res) => res.json(db.getTemplates()));
