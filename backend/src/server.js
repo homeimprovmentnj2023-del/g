@@ -164,6 +164,25 @@ function maybeAutoRepost(listing) {
   return true;
 }
 
+// Manual one-click repost of a listing from its source template (bypasses the
+// cooldown — it's a deliberate user action).
+app.post('/api/listings/:id/repost', (req, res) => {
+  const listing = db.getListing(req.params.id);
+  if (!listing) return res.status(404).json({ error: 'Listing not found' });
+  if (!listing.template_id) return res.status(400).json({ error: 'This listing has no source template to repost from.' });
+  const tpl = db.getTemplate(listing.template_id);
+  if (!tpl) return res.status(404).json({ error: 'Source template was deleted.' });
+
+  const job = db.createJob({
+    template_id: tpl.id, title: tpl.title, price: tpl.price ? String(tpl.price) : '',
+    description: tpl.description || '', location: tpl.location || '',
+    category: tpl.category || '', condition: tpl.condition || '', photos: tpl.photos || '[]',
+  });
+  db.addRepost(tpl.id);
+  db.addLog({ step: 'repost', status: 'info', detail: `Manual repost of "${listing.title}" queued from template #${tpl.id}` });
+  res.status(201).json(job);
+});
+
 // ── Settings ────────────────────────────────────────────────────────────────────
 
 app.get('/api/settings', (_req, res) => res.json(db.getSettings()));

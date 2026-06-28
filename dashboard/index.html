@@ -320,17 +320,30 @@ async function loadListings() {
 function renderListingsTable(listings) {
   if (!listings.length) return '<p class="empty">No listings yet. Use the extension to scan your Marketplace listings.</p>';
   return `<table>
-    <thead><tr><th>Title</th><th>Price</th><th>Status</th><th>Last Seen</th><th>URL</th></tr></thead>
+    <thead><tr><th>Title</th><th>Price</th><th>Status</th><th>Last Seen</th><th>Link</th><th>Actions</th></tr></thead>
     <tbody>${listings.map(l => `
       <tr>
         <td>${esc(l.title)}</td>
         <td>${esc(l.price)}</td>
-        <td><span class="badge badge-${l.status}">${l.status}</span></td>
+        <td><span class="badge badge-${l.status === 'active' ? 'active' : l.status === 'inactive' ? 'inactive' : 'unknown'}">${esc(l.status)}</span></td>
         <td>${relTime(l.last_seen)}</td>
         <td>${l.url ? `<a href="${esc(l.url)}" target="_blank" style="color:var(--blue)">View ↗</a>` : '—'}</td>
+        <td style="white-space:nowrap">
+          ${l.template_id
+            ? `<button class="btn btn-sm" style="color:#1877f2;border-color:#1877f2" onclick="repostListing('${esc(String(l.id))}')">🔁 Repost Now</button>`
+            : '<span style="color:var(--dim);font-size:11px">no template</span>'}
+        </td>
       </tr>`).join('')}
     </tbody>
   </table>`;
+}
+
+async function repostListing(id) {
+  if (!confirm('Queue a fresh post of this listing from its template now?')) return;
+  const res = await post(`/api/listings/${encodeURIComponent(id)}/repost`, {});
+  if (res.error) { showToast('Error: ' + res.error); return; }
+  showToast('Repost queued! The extension will post it shortly.');
+  document.querySelector('[data-panel="queue"]').click();
 }
 
 // ── Templates ─────────────────────────────────────────────────────────────────
