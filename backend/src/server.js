@@ -314,6 +314,58 @@ app.post('/api/debug', (req, res) => { db.addDebug(req.body || {}); res.json({ o
 app.get('/api/debug', (_req, res) => res.json(db.getDebug()));
 app.delete('/api/debug', (_req, res) => { db.clearDebug(); res.json({ ok: true }); });
 
+// ── Marketplace → existing chatbot bridge relay ────────────────────────────────
+// Personal-profile Marketplace chats have no Meta API/webhook, so the extension
+// content script (marketplace-chat.js) forwards each inbound message here. This
+// route relays it to the EXISTING n8n chatbot webhook server-side (so the n8n
+// URL + shared secret never live in the extension) and returns the bot's reply.
+//
+// It does NOT touch the chatbot — it just calls the workflow you already run and
+// passes the reply text back to the page. Configure in .env:
+//   N8N_WEBHOOK_URL    = https://<your-n8n>/webhook/marketplace-incoming
+//   N8N_SHARED_SECRET  = <any long random string, also set on the n8n side>
+app.post('/api/marketplace/incoming', async (req, res) => {
+  const url = process.env.N8N_WEBHOOK_URL;
+  if (!url) {
+    return res.status(503).json({ error: 'N8N_WEBHOOK_URL not set in backend/.env — see docs/n8n-marketplace-adapter.md' });
+  }
+
+  const { source = 'marketplace', sender_id, thread_id, sender_name, text, timestamp } = req.body || {};
+  if (!text || !String(text).trim()) return res.status(400).json({ error: 'text required' });
+
+  const payload = {
+    source, sender_id, thread_id, sender_name,
+    text: String(text), timestamp: timestamp || new Date().toISOString(),
+  };
+
+  // Abort if n8n is slow so the content script never hangs the page.
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), 30000);
+  try {
+    const headers = { 'Content-Type': 'application/json' };
+    if (process.env.N8N_SHARED_SECRET) headers['X-Bridge-Secret'] = process.env.N8N_SHARED_SECRET;
+
+    const r = await fetch(url, { method: 'POST', headers, body: JSON.stringify(payload), signal: ctrl.signal });
+    const raw = await r.text();
+    if (!r.ok) {
+      db.addLog({ step: 'marketplace-bridge', status: 'error', detail: `n8n responded ${r.status}: ${raw.slice(0, 300)}` });
+      return res.status(502).json({ error: `n8n responded ${r.status}` });
+    }
+    // n8n's "Respond to Webhook" node may return JSON {reply|text|message} or a
+    // bare string — accept either.
+    let reply = raw;
+    try { const j = JSON.parse(raw); reply = j.reply ?? j.text ?? j.message ?? j.output ?? raw; } catch (_) {}
+    db.addLog({ step: 'marketplace-bridge', status: 'info', detail: `Thread ${thread_id || '?'}: relayed inbound, got ${String(reply).length} char reply` });
+    res.json({ reply: String(reply) });
+  } catch (err) {
+    const msg = err.name === 'AbortError' ? 'n8n timed out (30s)' : err.message;
+    db.addLog({ step: 'marketplace-bridge', status: 'error', detail: msg });
+    res.status(504).json({ error: msg });
+  } finally {
+    clearTimeout(t);
+  }
+});
+
 // ── Competitors ───────────────────────────────────────────────────────────────
 
 app.get('/api/competitors', (_req, res) => res.json(db.getCompetitors()));

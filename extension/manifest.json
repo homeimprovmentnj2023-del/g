@@ -23,6 +23,14 @@
       "js": ["src/selectors.js", "src/scraper.js", "src/autofill.js", "src/content.js"],
       "css": ["src/sidebar.css"],
       "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://www.facebook.com/marketplace/inbox*",
+        "https://www.facebook.com/marketplace/t/*"
+      ],
+      "js": ["src/selectors.js", "src/marketplace-chat.js"],
+      "run_at": "document_idle"
     }
   ],
   "action": {

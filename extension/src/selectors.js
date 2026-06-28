@@ -48,4 +48,27 @@ window.FBM_SELECTORS = {
   browseCardTitle:    'span[class*="x1lliihq"]',
   browseCardPrice:    'span[class*="x193iq5w"]',
   browseCardLocation: 'span[class*="x1vvkbs"]:last-child',
+
+  // ── Marketplace inbox / chat (used by marketplace-chat.js bridge) ──────────
+  // These drive the read-inbound → reply loop. Facebook's chat DOM changes
+  // often; verify/adjust these with the "Capture Form (debug)" tool while the
+  // Marketplace inbox is open. Each value may be null until verified.
+  chat: {
+    // The scrolling container that holds all message rows in the open thread.
+    messageList:    'div[role="main"] div[aria-label*="Messages"], div[role="main"]',
+    // Each individual message row/bubble.
+    messageRow:     'div[role="row"], div[data-testid="message-container"]',
+    // Text node inside a message bubble.
+    messageText:    'div[dir="auto"]',
+    // Marks a row as the user's OWN (outbound) message so we never reply to it.
+    // FB has no stable "outbound" attribute — alignment classes vary; leave the
+    // selector-based ones and rely also on our injected data-fbm-bot marker.
+    outboundMarker: null,
+    outboundRowMatch: null,
+    // The buyer's display name (thread header).
+    contactName:    'div[role="main"] h1 span, div[aria-label="Conversation information"] span',
+    // The reply input (contenteditable) and the send button.
+    composeBox:     'div[contenteditable="true"][role="textbox"], div[aria-label*="Message"][contenteditable="true"]',
+    sendButton:     'div[aria-label="Press enter to send"], div[aria-label="Send"][role="button"]',
+  },
 };
