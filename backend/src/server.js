@@ -128,6 +128,59 @@ app.post('/api/templates/from-ai', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// Bulk-generate varied templates from seed titles + prices + description words,
+// rotating through chosen library photos. Each template gets a unique
+// title/price/description/photo combo to reduce duplicate/spam flagging.
+function titleCase(s) { return String(s).replace(/\w\S*/g, w => w[0].toUpperCase() + w.slice(1).toLowerCase()); }
+
+function genTitle(bases, words) {
+  const base = titleCase(bases[Math.floor(Math.random() * bases.length)].trim());
+  const defaults = ['Same Day', 'Like New', 'Best Quality', 'Shiny White', 'Professional', 'Affordable', 'Free Quote', 'Fast Service'];
+  const pool = [...new Set([...words.map(w => titleCase(w.trim())).filter(Boolean), ...defaults])];
+  if (!pool.length || Math.random() < 0.2) return base.slice(0, 80);
+  const mod = pool[Math.floor(Math.random() * pool.length)];
+  const formats = [`${base} - ${mod}`, `${mod} ${base}`, `${base} | ${mod}`, `${base} ${mod}`];
+  return formats[Math.floor(Math.random() * formats.length)].slice(0, 80);
+}
+
+function genDesc(words) {
+  const w = (words.length ? words : ['like new', 'same day', 'best quality', 'shiny', 'white']).map(x => x.trim()).filter(Boolean);
+  const shuffled = [...w].sort(() => Math.random() - 0.5);
+  const pick = shuffled.slice(0, Math.min(4, Math.max(2, Math.floor(Math.random() * w.length) + 1)));
+  const ctas = ['Message me for a free quote!', 'Call or message today.', 'Book your same-day service now.',
+    'Serious inquiries welcome.', 'DM for details and booking.', 'Limited spots — reserve today.'];
+  const cap = s => s.charAt(0).toUpperCase() + s.slice(1);
+  return `${cap(pick.join(', '))}. ${ctas[Math.floor(Math.random() * ctas.length)]}`;
+}
+
+app.post('/api/templates/generate', (req, res) => {
+  const { titles = [], prices = [], descWords = [], photos = [], location = '', category = 'Home Improvement', count = 10 } = req.body || {};
+  const bases = titles.map(t => String(t).trim()).filter(Boolean);
+  if (!bases.length) return res.status(400).json({ error: 'Provide at least one title seed' });
+  const priceList = (prices.length ? prices : ['99']).map(p => String(p).replace(/[^0-9.]/g, '')).filter(Boolean);
+  const photoList = Array.isArray(photos) ? photos : [];
+  const n = Math.min(Math.max(parseInt(count, 10) || 10, 1), 100);
+
+  const created = [];
+  const seen = new Set();
+  let attempts = 0;
+  while (created.length < n && attempts < n * 30) {
+    attempts++;
+    const title = genTitle(bases, descWords);
+    if (seen.has(title.toLowerCase())) continue;
+    seen.add(title.toLowerCase());
+    const tpl = db.createTemplate({
+      title,
+      price: priceList[Math.floor(Math.random() * priceList.length)] || '',
+      location, category,
+      description: genDesc(descWords),
+      photos: photoList.length ? [photoList[created.length % photoList.length]] : [],
+    });
+    created.push(tpl);
+  }
+  res.status(201).json({ created: created.length, templates: created });
+});
+
 // Build a template by copying an existing listing (title/price/description +
 // its photos, downloaded and stored locally for reuse).
 app.post('/api/templates/from-listing', async (req, res) => {

@@ -107,7 +107,8 @@
     <section>
       <div class="toolbar">
         <h2>Templates</h2>
-        <button class="btn" id="btn-template-from-competitors" style="color:#1877f2;border-color:#1877f2">🤖 Build from competitors</button>
+        <button class="btn" id="btn-bulk-generate" style="color:#6b3fb0;border-color:#6b3fb0">⚡ Bulk Generate</button>
+        <button class="btn" id="btn-template-from-competitors" style="color:#1877f2;border-color:#1877f2;margin-left:4px">🤖 Build from competitors</button>
         <button class="btn btn-primary" id="btn-new-template" style="margin-left:4px">+ New Template</button>
       </div>
       <p style="color:var(--dim);font-size:12px;margin-bottom:12px">
@@ -248,6 +249,36 @@
     <div class="modal-actions">
       <button class="btn btn-primary" id="btn-save-job">Add to Queue</button>
       <button class="btn" id="btn-cancel-job">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- Bulk Generate Modal -->
+<div class="modal-bg" id="modal-bulk">
+  <div class="modal" style="width:560px">
+    <h3>⚡ Bulk Generate Templates</h3>
+    <p style="color:var(--dim);font-size:12px;margin-bottom:10px">Mixes your seeds into varied templates (unique title/price/description/photo each) to reduce duplicate flagging.</p>
+    <label>Title seeds (one per line)</label>
+    <textarea id="bulk-titles" rows="5">Tub Reglaze
+Bathtub Reglaze
+Bathtub Refinishing
+Tub Glazing
+Bathtub Glazing
+Tub Refinishing</textarea>
+    <label>Prices (comma separated)</label>
+    <input id="bulk-prices" value="99, 149, 199, 279, 300" />
+    <label>Description words/phrases (comma separated)</label>
+    <input id="bulk-descwords" value="like new, same day, best quality, shiny, white" />
+    <div class="fbm-row" style="display:flex;gap:8px">
+      <div style="flex:1"><label>Location / ZIP</label><input id="bulk-location" placeholder="e.g. 07001" /></div>
+      <div style="flex:1"><label>Category</label><input id="bulk-category" value="Home Improvement" /></div>
+      <div style="width:90px"><label>How many</label><input id="bulk-count" type="number" value="10" min="1" max="100" /></div>
+    </div>
+    <label>Photos to rotate through (from library — click to select)</label>
+    <div id="bulk-photos" style="display:flex;flex-wrap:wrap;gap:6px;max-height:140px;overflow:auto;border:1px solid var(--border);border-radius:6px;padding:8px;margin-bottom:12px"></div>
+    <div class="modal-actions">
+      <button class="btn btn-primary" id="btn-do-bulk">Generate</button>
+      <button class="btn" id="btn-cancel-bulk">Cancel</button>
     </div>
   </div>
 </div>
@@ -556,6 +587,44 @@ document.getElementById('tmpl-photo-file').onchange = async (e) => {
     } catch (_) { showToast('Could not read ' + f.name); }
   }
   e.target.value = '';
+};
+
+// Bulk template generator
+let bulkSelectedPhotos = [];
+document.getElementById('btn-bulk-generate').onclick = async () => {
+  bulkSelectedPhotos = [];
+  const lib = await get('/api/photos/list');
+  const box = document.getElementById('bulk-photos');
+  box.innerHTML = lib.length
+    ? lib.map(p => `<img src="${esc(p.url)}" data-url="${esc(p.url)}" class="bulk-pic" style="width:56px;height:56px;object-fit:cover;border-radius:6px;border:2px solid transparent;cursor:pointer" />`).join('')
+    : '<span style="color:var(--dim);font-size:12px">No photos yet — add some in the Photo Library tab first (templates still generate, just without a photo).</span>';
+  box.querySelectorAll('.bulk-pic').forEach(img => {
+    img.onclick = () => {
+      const u = img.dataset.url;
+      if (bulkSelectedPhotos.includes(u)) { bulkSelectedPhotos = bulkSelectedPhotos.filter(x => x !== u); img.style.borderColor = 'transparent'; }
+      else { bulkSelectedPhotos.push(u); img.style.borderColor = 'var(--blue)'; }
+    };
+  });
+  document.getElementById('modal-bulk').classList.add('open');
+};
+document.getElementById('btn-cancel-bulk').onclick = () => document.getElementById('modal-bulk').classList.remove('open');
+document.getElementById('btn-do-bulk').onclick = async () => {
+  const titles = document.getElementById('bulk-titles').value.split('\n').map(s => s.trim()).filter(Boolean);
+  if (!titles.length) { showToast('Add at least one title seed'); return; }
+  const prices = document.getElementById('bulk-prices').value.split(',').map(s => s.trim()).filter(Boolean);
+  const descWords = document.getElementById('bulk-descwords').value.split(',').map(s => s.trim()).filter(Boolean);
+  showToast('Generating templates…');
+  const res = await post('/api/templates/generate', {
+    titles, prices, descWords,
+    photos: bulkSelectedPhotos,
+    location: document.getElementById('bulk-location').value.trim(),
+    category: document.getElementById('bulk-category').value.trim() || 'Home Improvement',
+    count: document.getElementById('bulk-count').value,
+  });
+  if (res.error) { showToast('Error: ' + res.error); return; }
+  document.getElementById('modal-bulk').classList.remove('open');
+  showToast(`Created ${res.created} templates!`);
+  loadTemplates();
 };
 
 // Build a template automatically from competitor data via AI
