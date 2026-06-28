@@ -308,6 +308,57 @@ window.FBMAutofill = (() => {
     return new File([blob], name, { type: blob.type || 'image/jpeg' });
   }
 
+  // Make a photo subtly unique so Facebook's duplicate-image detection doesn't
+  // flag it as the same picture used before (or in another area). The change is
+  // invisible to a human: tiny random edge crop, a small brightness/contrast
+  // shift, sparse low-amplitude noise, a 1px nudge, and JPEG re-encode at a
+  // random quality. Each call produces a different fingerprint.
+  async function uniquifyImageFile(file) {
+    try {
+      const bitmap = await createImageBitmap(file);
+      const clamp = v => (v < 0 ? 0 : v > 255 ? 255 : v);
+
+      // Random small crop (0–2% per side) → changes dimensions & pixel hash.
+      const cx = Math.floor(bitmap.width  * (Math.random() * 0.02));
+      const cy = Math.floor(bitmap.height * (Math.random() * 0.02));
+      const w = Math.max(1, bitmap.width  - cx * 2);
+      const h = Math.max(1, bitmap.height - cy * 2);
+
+      const canvas = document.createElement('canvas');
+      canvas.width = w; canvas.height = h;
+      const ctx = canvas.getContext('2d');
+
+      // Subtle brightness/contrast shift (±3% / ±2%).
+      const bright   = 1 + (Math.random() * 0.06 - 0.03);
+      const contrast = 1 + (Math.random() * 0.04 - 0.02);
+      ctx.filter = `brightness(${bright.toFixed(3)}) contrast(${contrast.toFixed(3)})`;
+      ctx.drawImage(bitmap, cx, cy, w, h, 0, 0, w, h);
+      ctx.filter = 'none';
+
+      // Sparse, low-amplitude noise (every ~70–200th pixel, ±3 levels).
+      try {
+        const imgData = ctx.getImageData(0, 0, w, h);
+        const d = imgData.data;
+        const step = (70 + Math.floor(Math.random() * 130)) * 4;
+        for (let i = 0; i < d.length; i += step) {
+          const n = (Math.random() * 6 - 3) | 0;
+          d[i] = clamp(d[i] + n); d[i + 1] = clamp(d[i + 1] + n); d[i + 2] = clamp(d[i + 2] + n);
+        }
+        ctx.putImageData(imgData, 0, 0);
+      } catch (_) { /* getImageData can fail on huge canvases — skip noise */ }
+
+      const quality = 0.82 + Math.random() * 0.14; // random re-encode quality
+      const blob = await new Promise(r => canvas.toBlob(r, 'image/jpeg', quality));
+      if (!blob) return file;
+      const base = (file.name || 'photo').replace(/\.\w+$/, '');
+      log('images', 'info', `uniquified image (${w}x${h}, q${quality.toFixed(2)}) to avoid duplicate detection`);
+      return new File([blob], `${base}-${Date.now()}.jpg`, { type: 'image/jpeg' });
+    } catch (err) {
+      log('images', 'warn', `could not uniquify image (${err.message}) — using original`);
+      return file;
+    }
+  }
+
   function countPhotoThumbs() {
     return document.querySelectorAll('img[src*="scontent"], img[src^="blob:"], div[aria-label="Photo" i]').length;
   }
@@ -324,7 +375,8 @@ window.FBMAutofill = (() => {
       const src = photos[i];
       try {
         const before = countPhotoThumbs();
-        const file = await fetchImageFile(src);
+        const original = await fetchImageFile(src);
+        const file = await uniquifyImageFile(original); // defeat duplicate-image detection
         const dt = new DataTransfer();
         dt.items.add(file);
         input.files = dt.files;

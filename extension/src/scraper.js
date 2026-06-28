@@ -58,33 +58,58 @@ window.FBMScraper = {
     return results.filter(c => seen.has(c.id) ? false : seen.add(c.id));
   },
 
-  // Scrapes the current listing page into a template: title, price, description,
-  // and the listing's photo URLs (the large Facebook CDN images on the page).
+  // Scrapes the current listing page into a template. Uses Facebook's og: meta
+  // tags (the most reliable source) and falls back to DOM scraping.
   scrapeListingForTemplate() {
-    const cur = this.scrapeCurrentListing() || {};
-    const title = cur.title || document.querySelector('h1')?.textContent?.trim() || '';
+    const og = (p) => document.querySelector(`meta[property="og:${p}"]`)?.getAttribute('content') || '';
 
-    // Collect the big photos: Facebook CDN images that are reasonably large
-    // (skip avatars, icons, reaction images). Dedupe by base URL.
+    // Title — og:title, then the first <h1>.
+    let title = og('title') || document.querySelector('h1')?.textContent?.trim() || '';
+    title = title.replace(/\s*[-–|]\s*Facebook.*$/i, '').trim();
+
+    // Price — scan the main column for the first "$1,234" token.
+    let price = '';
+    const priceEl = [...document.querySelectorAll('span, div')]
+      .find(el => /^\s*\$[\d,]+(\.\d+)?\s*$/.test(el.textContent || ''));
+    if (priceEl) price = priceEl.textContent.trim();
+    if (!price) { const m = (og('title') + ' ' + (document.body.innerText || '')).match(/\$[\d,]+(\.\d{2})?/); if (m) price = m[0]; }
+
+    // Description — og:description, then a long text block.
+    let description = og('description') || '';
+    if (!description) {
+      const blocks = [...document.querySelectorAll('div[data-ad-preview="message"], span, div')]
+        .map(e => (e.textContent || '').trim())
+        .filter(t => t.length > 40 && t.length < 1500);
+      description = blocks.sort((a, b) => b.length - a.length)[0] || '';
+    }
+
+    // Category — a marketplace category link, or text after a "Category" label.
+    let category = '';
+    const catLink = document.querySelector('a[href*="/marketplace/category/"]');
+    if (catLink) category = catLink.textContent.trim();
+    if (!category) {
+      const labelled = [...document.querySelectorAll('span, div')]
+        .find(e => /^\s*Category\s*:?/i.test(e.textContent || '') && (e.textContent || '').length < 60);
+      if (labelled) category = labelled.textContent.replace(/^\s*Category\s*:?\s*/i, '').trim();
+    }
+
+    // Photos — og:image (the primary listing photo) plus other large FB images.
     const photoUrls = [];
     const seen = new Set();
-    document.querySelectorAll('img[src*="scontent"], img[src*="fbcdn"]').forEach(img => {
-      const w = img.naturalWidth || img.width || 0;
-      const h = img.naturalHeight || img.height || 0;
-      if (w < 250 || h < 250) return;                 // skip small images (avatars/icons)
-      const src = img.currentSrc || img.src;
+    const addUrl = (src) => {
       if (!src) return;
       const key = src.split('?')[0];
       if (seen.has(key)) return; seen.add(key);
       photoUrls.push(src);
+    };
+    document.querySelectorAll('meta[property="og:image"]').forEach(m => addUrl(m.getAttribute('content')));
+    document.querySelectorAll('img[src*="scontent"], img[src*="fbcdn"]').forEach(img => {
+      const w = img.naturalWidth || img.width || 0;
+      const h = img.naturalHeight || img.height || 0;
+      if (w < 250 || h < 250) return; // skip avatars/icons
+      addUrl(img.currentSrc || img.src);
     });
 
-    return {
-      title,
-      price: cur.price || '',
-      description: cur.description || '',
-      url: cur.url || location.href,
-      photoUrls: photoUrls.slice(0, 10),
-    };
+    return { title, price, description, category, url: location.href, photoUrls: photoUrls.slice(0, 10) };
   },
 };
