@@ -26,3 +26,14 @@ echo.
 
 start "" http://localhost:3333
 node src\server.js
+
+REM Keep this window open if node exits/crashes so the error is readable.
+echo.
+echo ============================================================
+echo Backend stopped (exit code %errorlevel%).
+echo If you saw "EADDRINUSE" / "address already in use", the
+echo backend is ALREADY running - just open http://localhost:3333
+echo (do not double-click start.bat a second time).
+echo Otherwise, copy the lines above to diagnose the crash.
+echo ============================================================
+pause
