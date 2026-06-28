@@ -71,6 +71,7 @@
     <button data-panel="accounts">Accounts</button>
     <button data-panel="scheduler">Auto-Pilot</button>
     <button data-panel="queue">Publish Queue</button>
+    <button data-panel="bridge">Marketplace Bot</button>
     <button data-panel="logs">Logs</button>
     <button data-panel="debug">Debug</button>
   </nav>
@@ -236,6 +237,30 @@
         Every action and error from the listing automation is recorded here — useful for seeing exactly where a publish stopped.
       </p>
       <div id="logs-table"></div>
+    </section>
+  </div>
+
+  <!-- Marketplace Bot (chatbot bridge activity) -->
+  <div id="panel-bridge" class="panel">
+    <section>
+      <div class="toolbar">
+        <h2>Marketplace Bot Activity</h2>
+        <button class="btn" id="btn-refresh-bridge">Refresh</button>
+      </div>
+      <p style="color:var(--dim);font-size:12px;margin-bottom:12px">
+        Live view of the Marketplace → chatbot bridge: inbound buyer messages the
+        extension forwarded to your existing chatbot, the replies sent back, and any
+        errors. Auto-refreshes every 5s. Keep a logged-in Chrome window open on the
+        Marketplace inbox for the bot to send.
+      </p>
+      <div class="cards" id="bridge-cards">
+        <div class="stat-card"><div class="value" id="bridge-sent-today">—</div><div class="label">Replies Sent Today</div></div>
+        <div class="stat-card"><div class="value" id="bridge-sent-total">—</div><div class="label">Replies Sent (total)</div></div>
+        <div class="stat-card"><div class="value" id="bridge-errors">—</div><div class="label">Errors (24h)</div></div>
+        <div class="stat-card"><div class="value" id="bridge-last">—</div><div class="label">Last Activity</div></div>
+      </div>
+      <div id="bridge-status" style="font-size:13px;margin:8px 0 14px"></div>
+      <div id="bridge-table"></div>
     </section>
   </div>
 
@@ -422,6 +447,7 @@ function loadPanel(name) {
   if (name === 'photos')       loadPhotoLibrary();
   if (name === 'suggestions')  loadSuggestions();
   if (name === 'queue')        loadQueue();
+  if (name === 'bridge')       loadBridge();
   if (name === 'logs')         loadLogs();
   if (name === 'scheduler')    loadSchedules();
   if (name === 'debug')        loadDebug();
@@ -928,6 +954,58 @@ document.getElementById('btn-clear-logs').onclick = async () => {
 // Auto-refresh logs every 5s when on the logs panel
 setInterval(() => {
   if (document.getElementById('panel-logs').classList.contains('active')) loadLogs();
+}, 5000);
+
+// ── Marketplace Bot (bridge activity, from logs step "marketplace-bridge") ─────
+
+async function loadBridge() {
+  const logs = await get('/api/logs');
+  const rows = (logs || []).filter(l => l.step === 'marketplace-bridge');
+
+  const now = Date.now();
+  const startOfDay = new Date(); startOfDay.setHours(0, 0, 0, 0);
+  const ts = l => new Date(l.at).getTime();
+  const isSend = l => l.status === 'info' && /reply/i.test(l.detail || '');
+
+  const sentToday = rows.filter(l => isSend(l) && ts(l) >= startOfDay.getTime()).length;
+  const sentTotal = rows.filter(isSend).length;
+  const errors24  = rows.filter(l => l.status === 'error' && now - ts(l) < 24 * 3600 * 1000).length;
+
+  document.getElementById('bridge-sent-today').textContent = sentToday;
+  document.getElementById('bridge-sent-total').textContent = sentTotal;
+  document.getElementById('bridge-errors').textContent     = errors24;
+  document.getElementById('bridge-last').textContent       = rows.length ? relTime(rows[0].at) : '—';
+
+  // Health hint based on the most recent entry.
+  const status = document.getElementById('bridge-status');
+  if (!rows.length) {
+    status.innerHTML = '<span style="color:var(--dim)">No bridge activity yet. Open the Marketplace inbox in Chrome (with the extension loaded) and send a test message.</span>';
+  } else {
+    const last = rows[0];
+    const ok = last.status !== 'error';
+    status.innerHTML = `<span style="color:${ok ? '#155724' : '#721c24'};font-weight:600">${ok ? '● Bridge healthy' : '● Last action errored'}</span>
+      <span style="color:var(--dim)"> — ${esc(last.detail || '')}</span>`;
+  }
+
+  const el = document.getElementById('bridge-table');
+  if (!rows.length) { el.innerHTML = '<p class="empty">Nothing forwarded yet.</p>'; return; }
+  el.innerHTML = `<table>
+    <thead><tr><th>Time</th><th>Status</th><th>Detail</th></tr></thead>
+    <tbody>${rows.map(l => `
+      <tr>
+        <td style="white-space:nowrap;color:var(--dim)">${relTime(l.at)}</td>
+        <td><span class="badge" style="background:transparent;color:${LOG_COLORS[l.status] || '#333'};font-weight:600">${esc(l.status)}</span></td>
+        <td style="color:#333">${esc(l.detail)}</td>
+      </tr>`).join('')}
+    </tbody>
+  </table>`;
+}
+
+document.getElementById('btn-refresh-bridge').onclick = loadBridge;
+
+// Auto-refresh bridge activity every 5s when on its panel
+setInterval(() => {
+  if (document.getElementById('panel-bridge').classList.contains('active')) loadBridge();
 }, 5000);
 
 async function loadQueue() {
