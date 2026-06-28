@@ -248,6 +248,7 @@
     for (let attempt = 1; attempt <= CONFIG.maxSendRetries; attempt++) {
       setStatus('busy', attempt === 1 ? 'Sending…' : `Sending… (retry ${attempt - 1})`);
       if (!stage(text)) { await sleep(CONFIG.retryBackoffMs); continue; }
+      await sleep(450);                 // let Facebook swap the "like" thumb for the Send button
       pressSend(attempt);
       await sleep(CONFIG.sendVerifyMs);
       if (sendLooksConfirmed(text)) return true;  // box cleared / reply visible
@@ -280,28 +281,35 @@
     return true;
   }
 
-  // Find Facebook's Send button. Synthetic Enter is untrusted and ignored, so we
-  // must click the real button (usually a paper-plane icon next to the composer).
-  function findSendButton() {
+  // The composer toolbar — the ancestor that holds BOTH the action buttons (emoji,
+  // attach, like…) and the text box. Scopes our search so we never grab header or
+  // conversation-list buttons.
+  function composerRoot() {
     const box = composeBox();
-    // 1) Explicit labels (EN/ES) if present.
-    let btn = document.querySelector(
-      '[aria-label="Send"][role="button"],div[aria-label="Send"],[aria-label="Enviar"][role="button"],' +
-      'div[aria-label="Enviar"],div[aria-label="Press enter to send"],[aria-label="Press enter to send"]'
+    const anchor = document.querySelector(
+      '[aria-label="Choose an emoji"],[aria-label="Choose a GIF"],[aria-label="Choose a sticker"],' +
+      '[aria-label="Attach a file up to 25 MB"],[aria-label="Send a like"],[aria-label="Send a voice clip"]'
     );
-    if (btn && visible(btn)) return btn;
-    // 2) Heuristic: a visible icon button (SVG, no text) on the composer row,
-    //    to the right of the text box.
-    if (box) {
-      const br = box.getBoundingClientRect();
-      const cands = Array.from(document.querySelectorAll('[role="button"]')).filter(b => {
-        if (!visible(b) || (b.textContent || '').trim()) return false;
-        if (!b.querySelector('svg, i, image')) return false;
-        const r = b.getBoundingClientRect();
-        return Math.abs(r.top - br.top) < br.height + 24 && r.left >= br.left - 4; // same row, right side
-      }).sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left);
-      if (cands.length) return cands[cands.length - 1]; // right-most icon = Send
-    }
+    if (anchor && box) { let el = anchor; for (let i = 0; i < 9 && el; i++) { if (el.contains(box)) return el; el = el.parentElement; } }
+    return anchor ? anchor.parentElement : (box ? box.parentElement : null);
+  }
+
+  // Known composer icons that are NOT "send" — everything left over is the Send button.
+  const NON_SEND = /voice clip|attach|sticker|gif|emoji|\blike\b|notification|new message|more|menu|info|call|video|search|settings|details|mark as/i;
+
+  // Find Facebook's Send button. Synthetic Enter is untrusted and ignored, so we
+  // must click the real button (the paper-plane that replaces the "like" thumb
+  // once text is in the box).
+  function findSendButton() {
+    const root = composerRoot();
+    if (!root) return null;
+    const btns = Array.from(root.querySelectorAll('[role="button"]')).filter(b => visible(b) && b.querySelector('svg, i, image'));
+    // 1) Explicit send label (EN/ES) if present.
+    let send = btns.find(b => /^(send|enviar|press enter to send|send message|enviar mensaje)$/i.test((b.getAttribute('aria-label') || '').trim()));
+    if (send) return send;
+    // 2) Otherwise the composer icon that is NOT a known non-send action (right-most).
+    const rest = btns.filter(b => { const a = b.getAttribute('aria-label') || ''; return a && !NON_SEND.test(a); });
+    if (rest.length) { rest.sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left); return rest[rest.length - 1]; }
     return null;
   }
 
@@ -316,12 +324,9 @@
   function reportSendDebug(picked) {
     if (Date.now() - _sentDbgAt < 5000) return; _sentDbgAt = Date.now();
     try {
-      const box = composeBox();
-      const br = box ? box.getBoundingClientRect() : null;
-      const btns = Array.from(document.querySelectorAll('[role="button"]')).filter(visible).filter(b => {
-        if (!br) return false; const r = b.getBoundingClientRect();
-        return Math.abs(r.top - br.top) < br.height + 30;     // buttons on the composer row
-      }).map(b => ({ ariaLabel: b.getAttribute('aria-label') || '', text: (b.textContent || '').trim().slice(0, 20), svg: !!b.querySelector('svg, i, image') }));
+      const root = composerRoot();
+      const btns = (root ? Array.from(root.querySelectorAll('[role="button"]')).filter(visible) : [])
+        .map(b => ({ ariaLabel: b.getAttribute('aria-label') || '', text: (b.textContent || '').trim().slice(0, 20), svg: !!b.querySelector('svg, i, image') }));
       fetch(`${BACKEND}/api/debug`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ kind: 'mp-send-debug', url: location.href, pickedAria: picked ? (picked.getAttribute('aria-label') || '(icon, no label)') : null, composerButtons: btns }),
