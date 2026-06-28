@@ -23,10 +23,10 @@
   const BACKEND = 'http://localhost:3333';
 
   const CONFIG = {
-    // SAFETY: default is "suggest" mode — the bot's reply is typed into the
-    // compose box but NOT sent, so you can review before hitting Enter. Flip to
-    // true (or toggle via chrome.storage key `mpAutoSend`) once you trust it.
-    autoSend: false,
+    // FULLY AUTOMATED: the bot types AND sends the reply with no human action.
+    // Set chrome.storage key `mpAutoSend` to false if you ever want to switch to
+    // review-before-send (the reply is staged in the box but not sent).
+    autoSend: true,
     // Ignore messages older than this on first load so we don't reply to history.
     freshnessMs: 2 * 60 * 1000,
     debounceMs: 800,

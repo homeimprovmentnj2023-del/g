@@ -224,11 +224,11 @@ After importing:
    backend.
 2. n8n: import + wire the adapter above (or add the single IF if monolithic).
 3. Extension: reload it (`chrome://extensions` → reload). Open the Marketplace
-   inbox. The bridge starts in **suggest mode** — it types the reply but doesn't
-   send. Verify a real thread end-to-end.
-4. When satisfied, enable auto-send: in the extension service-worker console run
-   `chrome.storage.local.set({ mpAutoSend: true })` (or flip `CONFIG.autoSend`
-   in `marketplace-chat.js`).
+   inbox. The bridge is **fully automated** — it reads each inbound message,
+   gets the chatbot's reply, and **sends it automatically**, no clicks.
+4. (Optional) To switch to review-before-send while you calibrate selectors, run
+   `chrome.storage.local.set({ mpAutoSend: false })` in the extension's
+   service-worker console; set it back to `true` for full automation.
 5. If messages aren't detected, open the Marketplace inbox and use the sidebar's
    **Capture Form (debug)** button, then adjust `window.FBM_SELECTORS.chat` in
    `extension/src/selectors.js`.
