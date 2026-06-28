@@ -772,5 +772,42 @@ window.FBMAutofill = (() => {
 
   function safeJSON(s) { try { return JSON.parse(s || '[]'); } catch (_) { return []; } }
 
-  return { fill, fillAndPublish, deleteListing };
+  // Read the current create/edit FORM's field VALUES (reliable: real inputs with
+  // values), to copy an existing listing into a template. Use on the Edit page.
+  function readForm() {
+    const get = (labels) => {
+      const el = findInput(labels);
+      if (!el) return '';
+      return (el.value || el.textContent || '').trim();
+    };
+    // Category/Condition show their chosen value as the labelled control's text.
+    const chosen = (labels) => {
+      for (const label of labels) {
+        for (const lab of document.querySelectorAll('label, [role="button"], [role="combobox"]')) {
+          const txt = (lab.textContent || '').trim();
+          if (txt.toLowerCase().startsWith(label.toLowerCase()) && txt.length > label.length + 1) {
+            return txt.slice(label.length).replace(/^[:\s-]+/, '').trim().slice(0, 60);
+          }
+        }
+      }
+      return '';
+    };
+    const photoUrls = [...new Set(
+      [...document.querySelectorAll('img[src*="scontent"], img[src*="fbcdn"]')]
+        .filter(i => (i.naturalWidth || i.width || 0) > 150)
+        .map(i => i.currentSrc || i.src),
+    )].slice(0, 10);
+
+    return {
+      title:       get(LABELS.title),
+      price:       get(LABELS.price).replace(/[^0-9.]/g, ''),
+      description: get(LABELS.description),
+      category:    chosen(LABELS.category),
+      location:    get(LABELS.location),
+      photoUrls,
+      url:         location.href,
+    };
+  }
+
+  return { fill, fillAndPublish, deleteListing, readForm };
 })();

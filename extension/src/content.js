@@ -253,13 +253,26 @@ async function captureForm(sidebar) {
 
 // Copy the current Facebook listing page into a reusable template (incl. photos).
 async function saveListingAsTemplate(sidebar) {
-  if (!location.href.includes('/marketplace/item/')) {
-    showToast('Open one of your listings first, then click this.');
+  let data;
+  const onForm = /\/marketplace\/(create|edit)/.test(location.pathname);
+
+  if (onForm && window.FBMAutofill?.readForm) {
+    // Most reliable: read the real input values on the create/edit form.
+    data = window.FBMAutofill.readForm();
+  } else if (location.href.includes('/marketplace/item/')) {
+    // Fallback: scrape the listing view page (uses og: tags).
+    data = window.FBMScraper.scrapeListingForTemplate();
+  } else {
+    showToast('Open your listing’s EDIT page (or the listing), then click this.');
     return;
   }
-  const data = window.FBMScraper.scrapeListingForTemplate();
-  if (!data.title) { showToast('Could not read this listing. Scroll so the title/photos are visible, then retry.'); return; }
-  showToast(`Saving "${data.title}" (${data.photoUrls.length} photo(s))…`);
+
+  if (!data.title) {
+    showToast('Couldn’t read the title. Best way: open the listing’s Edit page (the form), then click this again.');
+    return;
+  }
+  const nPhotos = (data.photoUrls || []).length;
+  showToast(`Saving "${data.title}" (${nPhotos} photo(s))…`);
   const res = await api('/api/templates/from-listing', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
