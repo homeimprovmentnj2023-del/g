@@ -17,6 +17,8 @@ const now = () => Math.floor(Date.now() / 1000);
 const empty = {
   templates: [], listings: [], listing_events: [],
   competitors: [], ai_suggestions: [], post_queue: [], logs: [], schedules: [],
+  repost_history: [],
+  settings: { auto_repost: false },
   counters: { templates: 0, listing_events: 0, ai_suggestions: 0, post_queue: 0, logs: 0, schedules: 0 },
 };
 
@@ -88,6 +90,7 @@ module.exports = {
       existing.title     = l.title;
       existing.price     = l.price;
       existing.status    = l.status || existing.status;
+      if (l.template_id != null) existing.template_id = l.template_id; // keep source template
       existing.last_seen = now();
     } else {
       data.listings.push({
@@ -216,4 +219,13 @@ module.exports = {
   },
   deleteSchedule: (id) => { data.schedules = data.schedules.filter(s => s.id !== Number(id)); saveNow(); },
   saveSchedules: () => saveNow(),
+
+  // ── Settings ──────────────────────────────────────────────────────────────────
+  getSettings: () => ({ ...empty.settings, ...data.settings }),
+  setSettings: (patch) => { data.settings = { ...data.settings, ...patch }; saveNow(); return module.exports.getSettings(); },
+
+  // ── Repost history (cooldown so we don't loop on a repeatedly-removed item) ────
+  addRepost: (templateId) => { data.repost_history.push({ template_id: Number(templateId), at: now() }); saveNow(); },
+  countRecentReposts: (templateId, sinceSeconds) =>
+    data.repost_history.filter(r => r.template_id === Number(templateId) && r.at >= now() - sinceSeconds).length,
 };

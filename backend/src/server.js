@@ -86,7 +86,11 @@ app.get('/api/listings', (_req, res) => res.json(db.getListings()));
 app.post('/api/listings', (req, res) => {
   const l = req.body;
   if (!l.id) return res.status(400).json({ error: 'id required' });
-  db.upsertListing({ id: l.id, title: l.title || '', price: l.price || '', description: l.description || '', status: l.status || 'active', url: l.url || '' });
+  db.upsertListing({
+    id: l.id, title: l.title || '', price: l.price || '', description: l.description || '',
+    status: l.status || 'active', url: l.url || '',
+    template_id: l.template_id != null ? l.template_id : null, // remember source template for auto-repost
+  });
   res.json({ ok: true });
 });
 
@@ -115,9 +119,55 @@ app.get('/api/listings/:id/events', (req, res) => {
 app.patch('/api/listings/:id/status', (req, res) => {
   const { status } = req.body;
   if (!status) return res.status(400).json({ error: 'status required' });
+
+  const before = db.getListing(req.params.id);
+  // Capture the previous status BEFORE updating — `before` is a live reference
+  // that updateListingStatus mutates in place.
+  const wasActive = !!before && before.status === 'active';
   db.updateListingStatus(req.params.id, status);
-  res.json({ ok: true });
+
+  // Auto-repost: when a listing transitions to inactive (suspended/removed) and
+  // it came from a template, queue a fresh post — so it comes back to life on
+  // its own. A cooldown prevents an endless loop if Facebook keeps removing it.
+  let reposted = false;
+  if (status === 'inactive' && wasActive) {
+    reposted = maybeAutoRepost(before);
+  }
+  res.json({ ok: true, reposted });
 });
+
+const REPOST_COOLDOWN_SECONDS = 6 * 3600; // at most a few reposts per template per window
+const REPOST_CAP_PER_WINDOW    = 2;
+
+function maybeAutoRepost(listing) {
+  const settings = db.getSettings();
+  if (!settings.auto_repost) return false;
+  if (!listing.template_id) {
+    db.addLog({ step: 'repost', status: 'warn', detail: `Listing ${listing.id} went inactive but has no template to repost from` });
+    return false;
+  }
+  const recent = db.countRecentReposts(listing.template_id, REPOST_COOLDOWN_SECONDS);
+  if (recent >= REPOST_CAP_PER_WINDOW) {
+    db.addLog({ step: 'repost', status: 'warn', detail: `Repost cooldown hit for template #${listing.template_id} (Facebook may be repeatedly removing it — check the listing)` });
+    return false;
+  }
+  const tpl = db.getTemplate(listing.template_id);
+  if (!tpl) return false;
+
+  db.createJob({
+    template_id: tpl.id, title: tpl.title, price: tpl.price ? String(tpl.price) : '',
+    description: tpl.description || '', location: tpl.location || '',
+    category: tpl.category || '', condition: tpl.condition || '', photos: tpl.photos || '[]',
+  });
+  db.addRepost(tpl.id);
+  db.addLog({ step: 'repost', status: 'info', detail: `"${listing.title}" was suspended/removed — queued a fresh post from template #${tpl.id}` });
+  return true;
+}
+
+// ── Settings ────────────────────────────────────────────────────────────────────
+
+app.get('/api/settings', (_req, res) => res.json(db.getSettings()));
+app.patch('/api/settings', (req, res) => res.json(db.setSettings(req.body || {})));
 
 // ── Competitors ───────────────────────────────────────────────────────────────
 
