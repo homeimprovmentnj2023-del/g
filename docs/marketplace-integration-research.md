@@ -10,6 +10,64 @@ chatbot logic.
 
 ---
 
+## ✅ CONFIRMED DECISION (2026-06-28)
+
+**Listings are managed under a personal Facebook profile** (not a Page).
+
+This **rules out Option A entirely**: personal-profile Marketplace chats have
+**no Meta messaging API and no webhook** — there is no supported server-side way
+in, and no Meta/Facebook app or Page configuration will change that.
+
+**The confirmed path is Option B — the browser-bridge forwarder** (details in
+§3), built on the Chrome extension already in this repo. Concrete plan:
+
+1. **n8n — add ONE inbound webhook + a mapper node.** It accepts the bridge's
+   POST, normalizes it to the *same payload shape* the existing Messenger
+   trigger emits, then connects to the **existing workflow entry point**.
+   Nothing downstream changes — prompts, booking, conversation logic,
+   follow-ups, CRM, Calendar, and Telegram all run as-is. Protect the endpoint
+   with a shared secret/token.
+
+   Suggested normalized payload (map to whatever your current trigger expects):
+   ```json
+   {
+     "source": "marketplace",
+     "sender_id": "<stable thread/user id from the DOM>",
+     "thread_id": "<marketplace thread id>",
+     "text": "<inbound message text>",
+     "timestamp": "<ISO-8601>",
+     "secret": "<shared token>"
+   }
+   ```
+
+2. **Extension — extend the existing content script** (reuse
+   `extension/src/content.js` + `selectors.js`; no second extension): detect a
+   new *inbound* Marketplace message → POST to the n8n endpoint → receive the
+   reply text → inject it into the compose box and send. Stamp
+   `source: "marketplace"` on every payload so the source is known with
+   certainty (see §4).
+
+3. **De-dupe & loop-guard:** track the last-seen message id per thread so the
+   same message isn't forwarded twice, and never forward the bot's *own*
+   outgoing replies back into n8n.
+
+4. **Operate within constraints (see §3 / §5):** a logged-in browser session
+   must stay open; replies happen only while the page is open (no proactive
+   out-of-session sending); keep cadence human-like to respect Facebook's
+   anti-spam/automation policies; update `selectors.js` if the Marketplace UI
+   changes.
+
+**Net change footprint:** one n8n inbound node + mapper, and an additive
+read/reply loop in the existing extension. **The chatbot and all existing
+integrations remain untouched.**
+
+> Note: source identification is trivial here — the bridge sets
+> `source: "marketplace"` itself, so no guessing from Messenger metadata is
+> needed. Use the tag for CRM labeling/reporting only, not to branch
+> conversation logic.
+
+---
+
 ## TL;DR (the short answer)
 
 - **There is no first‑class "Marketplace API".** Marketplace has no public
