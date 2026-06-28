@@ -184,6 +184,12 @@
     // we don't reply to the whole back-history when the inbox first loads.
     if (Date.now() - booted < CONFIG.freshnessMs && seen.size > 3) return;
 
+    // Conversation memory: send the recent thread (read from the DOM) so the bot
+    // has context — Marketplace chats aren't stored in the bot's database.
+    const { buyer } = conversationInfo();
+    const roleOf = m => (m.bot || botSent.has(norm(m.text)) || !(buyer && m.sender.toLowerCase().includes(buyer.toLowerCase()))) ? 'You' : 'Customer';
+    const history = scanMessages().slice(-13, -1).map(m => ({ role: roleOf(m), text: m.text }));
+
     const payload = {
       source: 'marketplace',
       sender_id: tid,                          // stable per-thread id
@@ -191,6 +197,7 @@
       sender_name: contactName(),
       text: inbound.text,
       timestamp: new Date().toISOString(),
+      history,                                  // recent thread for context/memory
     };
 
     let reply;
@@ -241,7 +248,7 @@
     for (let attempt = 1; attempt <= CONFIG.maxSendRetries; attempt++) {
       setStatus('busy', attempt === 1 ? 'Sending…' : `Sending… (retry ${attempt - 1})`);
       if (!stage(text)) { await sleep(CONFIG.retryBackoffMs); continue; }
-      pressSend();
+      pressSend(attempt);
       await sleep(CONFIG.sendVerifyMs);
       if (sendLooksConfirmed(text)) return true;  // box cleared / reply visible
       await sleep(CONFIG.retryBackoffMs * attempt);
@@ -267,11 +274,20 @@
     return true;
   }
 
-  function pressSend() {
-    const btn = $(SEL.sendButton);
-    if (btn && visible(btn)) { btn.click(); return; }
-    const box = $(SEL.composeBox);
-    box?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
+  function pressSend(attempt) {
+    const box = composeBox();
+    if (box) box.focus();
+    const tgt = (box && document.activeElement && box.contains(document.activeElement)) ? document.activeElement : box;
+    // Primary: Marketplace sends on Enter — dispatch a full key sequence so FB's
+    // editor reliably registers it (a lone keydown is often ignored).
+    if (tgt) ['keydown', 'keypress', 'keyup'].forEach(t =>
+      tgt.dispatchEvent(new KeyboardEvent(t, { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true })));
+    // Fallback on a retry: click an explicit Send button if Facebook shows one.
+    if (attempt && attempt >= 2) {
+      const btn = document.querySelector('div[aria-label="Send"][role="button"],[aria-label="Send"][role="button"],div[aria-label="Press enter to send"]')
+        || Array.from(document.querySelectorAll('[role="button"]')).find(b => /\bsend\b/i.test(b.getAttribute('aria-label') || ''));
+      if (btn && visible(btn)) btn.click();
+    }
   }
 
   // Heuristic confirmation: after a successful send FB clears the compose box,

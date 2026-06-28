@@ -330,12 +330,13 @@ app.post('/api/marketplace/incoming', async (req, res) => {
     return res.status(503).json({ error: 'N8N_WEBHOOK_URL not set in backend/.env — see docs/n8n-marketplace-adapter.md' });
   }
 
-  const { source = 'marketplace', sender_id, thread_id, sender_name, text, timestamp } = req.body || {};
+  const { source = 'marketplace', sender_id, thread_id, sender_name, text, timestamp, history } = req.body || {};
   if (!text || !String(text).trim()) return res.status(400).json({ error: 'text required' });
 
   const payload = {
     source, sender_id, thread_id, sender_name,
     text: String(text), timestamp: timestamp || new Date().toISOString(),
+    history: Array.isArray(history) ? history : [],   // recent thread for context/memory
   };
 
   // Abort if n8n is slow so the content script never hangs the page.
