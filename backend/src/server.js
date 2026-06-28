@@ -158,6 +158,7 @@ function maybeAutoRepost(listing) {
     template_id: tpl.id, title: tpl.title, price: tpl.price ? String(tpl.price) : '',
     description: tpl.description || '', location: tpl.location || '',
     category: tpl.category || '', condition: tpl.condition || '', photos: tpl.photos || '[]',
+    delete_url: listing.url || null, // delete the old (possibly still-visible) listing first
   });
   db.addRepost(tpl.id);
   db.addLog({ step: 'repost', status: 'info', detail: `"${listing.title}" was suspended/removed — queued a fresh post from template #${tpl.id}` });
@@ -177,6 +178,7 @@ app.post('/api/listings/:id/repost', (req, res) => {
     template_id: tpl.id, title: tpl.title, price: tpl.price ? String(tpl.price) : '',
     description: tpl.description || '', location: tpl.location || '',
     category: tpl.category || '', condition: tpl.condition || '', photos: tpl.photos || '[]',
+    delete_url: listing.url || null, // delete the old listing first to avoid a duplicate
   });
   db.addRepost(tpl.id);
   db.addLog({ step: 'repost', status: 'info', detail: `Manual repost of "${listing.title}" queued from template #${tpl.id}` });

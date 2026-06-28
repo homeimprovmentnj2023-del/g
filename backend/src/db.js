@@ -151,6 +151,7 @@ module.exports = {
       id: nextId('post_queue'), template_id: j.template_id || null,
       title: j.title, price: j.price || '', description: j.description || '',
       location: j.location || '', category: j.category || '', photos: j.photos || '[]',
+      delete_url: j.delete_url || null,   // if set, delete this old listing before posting
       status: 'pending', result: null, created_at: now(), updated_at: now(),
     };
     data.post_queue.push(row);

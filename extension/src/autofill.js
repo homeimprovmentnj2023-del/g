@@ -542,6 +542,66 @@ window.FBMAutofill = (() => {
              error: m ? undefined : 'Clicked Publish but could not confirm the post — please check Marketplace once.' };
   }
 
+  // ── Delete an existing listing (so a repost isn't rejected as a duplicate) ────
+  // Runs on the listing's own page. Opens the manage/more menu if needed, clicks
+  // Delete, and confirms. Best-effort: if the listing is already gone, returns
+  // gracefully so the repost can still proceed.
+  const DELETE_WORDS  = ['delete listing', 'delete', 'remove listing', 'remove',
+    'eliminar publicación', 'eliminar', 'borrar', 'quitar'];
+  const MENU_WORDS    = ['more', 'more options', 'manage', 'options', 'menu', 'edit listing',
+    'más', 'mas', 'más opciones', 'opciones', 'administrar', 'editar'];
+  const CONFIRM_WORDS = ['delete', 'confirm', 'remove', 'ok', 'eliminar', 'borrar', 'aceptar', 'confirmar'];
+
+  function findDeleteControl() {
+    let el = findClickableByText(DELETE_WORDS, ['button', 'menuitem', 'menuitemradio']);
+    if (el) return el;
+    const opts = collectOptions();
+    return opts.find(o => /delete|remove|eliminar|borrar|quitar/i.test(o.textContent || '')) || null;
+  }
+
+  async function deleteListing() {
+    log('delete', 'info', 'attempting to delete old listing before reposting');
+    try {
+      await sleep(1500);
+
+      // If the page says the listing is unavailable, treat as already deleted.
+      const body = (document.body.innerText || '').toLowerCase();
+      if (/no longer available|isn'?t available|page not found|content not found|contenido no disponible/.test(body)) {
+        log('delete', 'success', 'listing already gone — nothing to delete');
+        return { ok: true, alreadyGone: true };
+      }
+
+      // Try to find a Delete control directly; otherwise open a More/Manage menu.
+      let del = findDeleteControl();
+      if (!del) {
+        const more = findClickableByText(MENU_WORDS, ['button', 'menuitem'])
+          || document.querySelector('[aria-label="More options" i], [aria-label="Más opciones" i], [aria-haspopup="menu"]');
+        if (more) { realClick(more); await sleep(1300); del = findDeleteControl(); }
+      }
+      if (!del) { log('delete', 'warn', 'no Delete control found — continuing to post anyway'); return { ok: false }; }
+
+      realClick(del);
+      await sleep(1300);
+
+      // Confirm in the dialog (prefer a button inside an actual dialog).
+      let confirm = null;
+      const dialog = document.querySelector('[role="dialog"]');
+      if (dialog) {
+        const lowers = CONFIRM_WORDS;
+        confirm = [...dialog.querySelectorAll('[role="button"], button')]
+          .find(b => lowers.includes((b.textContent || '').trim().toLowerCase()));
+      }
+      if (!confirm) confirm = findClickableByText(CONFIRM_WORDS, ['button']);
+      if (confirm) { realClick(confirm); await sleep(1800); }
+
+      log('delete', 'success', 'old listing deleted');
+      return { ok: true };
+    } catch (err) {
+      log('delete', 'warn', `delete failed (${err.message}) — continuing to post`);
+      return { ok: false, error: err.message };
+    }
+  }
+
   // ── Orchestration ────────────────────────────────────────────────────────────
   async function fillAndPublish(template) {
     currentJobId = template.__jobId != null ? template.__jobId : null;
@@ -660,5 +720,5 @@ window.FBMAutofill = (() => {
 
   function safeJSON(s) { try { return JSON.parse(s || '[]'); } catch (_) { return []; } }
 
-  return { fill, fillAndPublish };
+  return { fill, fillAndPublish, deleteListing };
 })();

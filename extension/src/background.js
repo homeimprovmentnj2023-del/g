@@ -145,6 +145,27 @@ async function runPublishJob(job) {
 
   return new Promise(async (resolve) => {
     try {
+      // Step A — if this is a repost, delete the old listing first so Facebook
+      // doesn't reject the new one as a duplicate (same photo/title).
+      if (job.delete_url) {
+        try {
+          const delTab = await chrome.tabs.create({ url: job.delete_url, active: true });
+          await waitForTabLoad(delTab.id, 20000);
+          await sleep(2500);
+          await chrome.scripting.executeScript({ target: { tabId: delTab.id }, files: ['src/selectors.js'] });
+          await chrome.scripting.executeScript({ target: { tabId: delTab.id }, files: ['src/autofill.js'] });
+          await sleep(500);
+          await chrome.scripting.executeScript({
+            target: { tabId: delTab.id },
+            func: async () => await window.FBMAutofill.deleteListing(),
+          });
+          await sleep(1500);
+          chrome.tabs.remove(delTab.id).catch(() => {});
+        } catch (e) {
+          console.warn('[FBM] delete-before-repost failed (continuing):', e.message);
+        }
+      }
+
       const tab = await chrome.tabs.create({ url: CREATE_URL, active: true });
       publishTabId = tab.id;
 
