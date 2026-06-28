@@ -142,4 +142,39 @@ Respond with ONLY valid JSON (no prose, no code fence) of the form:
   return parsed;
 }
 
-module.exports = { suggest, composeListing, FB_CATEGORIES };
+// Produce a FRESH variation of a listing's title + description so repeated
+// posts aren't identical text (helps avoid duplicate detection). Keeps the same
+// item/meaning. Heuristic fallback when no API key.
+async function varyListing({ title = '', description = '', category = '', competitors = [] }) {
+  if (!process.env.ANTHROPIC_API_KEY) {
+    const closers = ['Great condition.', 'Ready to go.', 'Serious buyers welcome.',
+      'Message me for details.', 'Priced to sell.', 'Don\'t miss out.', 'Available now.'];
+    const adjectives = ['Nice', 'Clean', 'Quality', 'Great'];
+    const extra = closers[Math.floor(Math.random() * closers.length)];
+    const desc = (description && description.trim()) ? `${description.trim()} ${extra}` : extra;
+    // Lightly vary the title with a leading adjective ~half the time.
+    const t = Math.random() < 0.5 ? `${adjectives[Math.floor(Math.random() * adjectives.length)]} ${title}` : title;
+    return { title: t.slice(0, 100), description: desc, _ai: false };
+  }
+  const prompt = `Rewrite this Facebook Marketplace listing as a FRESH variation so it is not word-for-word identical to previous posts, while keeping the SAME item, meaning, and accuracy.
+Title: "${title}"
+Description: "${description || '(none)'}"
+Category: ${category || '(none)'}
+
+Rules: keep the title accurate and under 80 characters; keep the description short (1-3 friendly sentences) ending with a call to message. Do not invent specs that aren't implied.
+Respond ONLY as JSON: {"title":"...","description":"..."}`;
+
+  try {
+    const msg = await getClient().messages.create({
+      model: 'claude-haiku-4-5-20251001', max_tokens: 400,
+      messages: [{ role: 'user', content: prompt }],
+    });
+    const parsed = parseJSONLoose(msg.content[0]?.text || '');
+    if (!parsed || !parsed.title) return { title, description, _ai: false };
+    return { title: String(parsed.title).slice(0, 100), description: String(parsed.description || description), _ai: true };
+  } catch (_) {
+    return { title, description, _ai: false };
+  }
+}
+
+module.exports = { suggest, composeListing, varyListing, FB_CATEGORIES };

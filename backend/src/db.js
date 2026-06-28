@@ -18,7 +18,7 @@ const empty = {
   templates: [], listings: [], listing_events: [],
   competitors: [], ai_suggestions: [], post_queue: [], logs: [], schedules: [],
   repost_history: [],
-  settings: { auto_repost: false },
+  settings: { auto_repost: false, ai_rewrite: false },
   counters: { templates: 0, listing_events: 0, ai_suggestions: 0, post_queue: 0, logs: 0, schedules: 0 },
 };
 

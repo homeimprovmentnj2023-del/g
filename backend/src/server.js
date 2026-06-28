@@ -183,17 +183,16 @@ app.patch('/api/listings/:id/status', (req, res) => {
   // Auto-repost: when a listing transitions to inactive (suspended/removed) and
   // it came from a template, queue a fresh post — so it comes back to life on
   // its own. A cooldown prevents an endless loop if Facebook keeps removing it.
-  let reposted = false;
   if (status === 'inactive' && wasActive) {
-    reposted = maybeAutoRepost(before);
+    maybeAutoRepost(before).catch(() => {}); // fire-and-forget (may call AI)
   }
-  res.json({ ok: true, reposted });
+  res.json({ ok: true });
 });
 
 const REPOST_COOLDOWN_SECONDS = 6 * 3600; // at most a few reposts per template per window
 const REPOST_CAP_PER_WINDOW    = 2;
 
-function maybeAutoRepost(listing) {
+async function maybeAutoRepost(listing) {
   const settings = db.getSettings();
   if (!settings.auto_repost) return false;
   if (!listing.template_id) {
@@ -208,12 +207,7 @@ function maybeAutoRepost(listing) {
   const tpl = db.getTemplate(listing.template_id);
   if (!tpl) return false;
 
-  db.createJob({
-    template_id: tpl.id, title: tpl.title, price: tpl.price ? String(tpl.price) : '',
-    description: tpl.description || '', location: tpl.location || '',
-    category: tpl.category || '', condition: tpl.condition || '', photos: tpl.photos || '[]',
-    delete_url: listing.url || null, // delete the old (possibly still-visible) listing first
-  });
+  await queueJobFromTemplate(tpl, { delete_url: listing.url || null });
   db.addRepost(tpl.id);
   db.addLog({ step: 'repost', status: 'info', detail: `"${listing.title}" was suspended/removed — queued a fresh post from template #${tpl.id}` });
   return true;
@@ -221,19 +215,14 @@ function maybeAutoRepost(listing) {
 
 // Manual one-click repost of a listing from its source template (bypasses the
 // cooldown — it's a deliberate user action).
-app.post('/api/listings/:id/repost', (req, res) => {
+app.post('/api/listings/:id/repost', async (req, res) => {
   const listing = db.getListing(req.params.id);
   if (!listing) return res.status(404).json({ error: 'Listing not found' });
   if (!listing.template_id) return res.status(400).json({ error: 'This listing has no source template to repost from.' });
   const tpl = db.getTemplate(listing.template_id);
   if (!tpl) return res.status(404).json({ error: 'Source template was deleted.' });
 
-  const job = db.createJob({
-    template_id: tpl.id, title: tpl.title, price: tpl.price ? String(tpl.price) : '',
-    description: tpl.description || '', location: tpl.location || '',
-    category: tpl.category || '', condition: tpl.condition || '', photos: tpl.photos || '[]',
-    delete_url: listing.url || null, // delete the old listing first to avoid a duplicate
-  });
+  const job = await queueJobFromTemplate(tpl, { delete_url: listing.url || null });
   db.addRepost(tpl.id);
   db.addLog({ step: 'repost', status: 'info', detail: `Manual repost of "${listing.title}" queued from template #${tpl.id}` });
   res.status(201).json(job);
@@ -259,23 +248,36 @@ app.post('/api/competitors/bulk', (req, res) => {
 
 // ── Publish Queue ─────────────────────────────────────────────────────────────
 
+// Central job builder. When the ai_rewrite setting is on, it generates a fresh
+// title + description variation so repeated posts aren't identical text.
+async function queueJobFromTemplate(tpl, extra = {}) {
+  let title = tpl.title;
+  let description = tpl.description || '';
+  if (db.getSettings().ai_rewrite) {
+    try {
+      const v = await ai.varyListing({ title, description, category: tpl.category, competitors: db.getCompetitors() });
+      if (v.title) title = v.title;
+      if (v.description) description = v.description;
+      db.addLog({ step: 'ai-rewrite', status: 'info', detail: `Fresh wording generated for "${tpl.title}"` });
+    } catch (_) { /* fall back to template text */ }
+  }
+  return db.createJob({
+    template_id: tpl.id, title, price: tpl.price ? String(tpl.price) : '',
+    description, location: tpl.location || '', category: tpl.category || '',
+    condition: tpl.condition || '', photos: tpl.photos || '[]',
+    delete_url: extra.delete_url || null,
+  });
+}
+
 // Create a job from a template (extension calls this when user clicks Publish)
-app.post('/api/publish', (req, res) => {
+app.post('/api/publish', async (req, res) => {
   const { templateId } = req.body;
   if (!templateId) return res.status(400).json({ error: 'templateId required' });
 
   const template = db.getTemplate(templateId);
   if (!template) return res.status(404).json({ error: 'Template not found' });
 
-  const job = db.createJob({
-    template_id: template.id,
-    title:       template.title,
-    price:       template.price ? String(template.price) : '',
-    description: template.description || '',
-    location:    template.location || '',
-    category:    template.category || '',
-    photos:      template.photos || '[]',
-  });
+  const job = await queueJobFromTemplate(template);
   res.status(201).json(job);
 });
 
@@ -412,7 +414,7 @@ app.get('/api/analytics', (_req, res) => {
 
 function pad(n) { return String(n).padStart(2, '0'); }
 
-function tickScheduler() {
+async function tickScheduler() {
   const d = new Date();
   const today = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
   const hhmm  = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
@@ -432,11 +434,7 @@ function tickScheduler() {
         const templateId = s.template_ids[s.cursor % s.template_ids.length];
         const tpl = db.getTemplate(templateId);
         if (tpl) {
-          db.createJob({
-            template_id: tpl.id, title: tpl.title, price: tpl.price ? String(tpl.price) : '',
-            description: tpl.description || '', location: tpl.location || '',
-            category: tpl.category || '', condition: tpl.condition || '', photos: tpl.photos || '[]',
-          });
+          await queueJobFromTemplate(tpl);
           db.addLog({ job_id: null, step: 'scheduler', status: 'info', detail: `Schedule "${s.name}" queued template #${tpl.id} for slot ${slot}` });
           s.cursor = (s.cursor + 1) % s.template_ids.length;
           s.posted_today = (s.posted_today || 0) + 1;
@@ -449,7 +447,7 @@ function tickScheduler() {
   }
 }
 
-setInterval(tickScheduler, 60 * 1000);
+setInterval(() => { tickScheduler().catch(() => {}); }, 60 * 1000);
 
 // ── Serve dashboard for any unknown route ─────────────────────────────────────
 
