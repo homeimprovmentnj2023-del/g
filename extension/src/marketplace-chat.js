@@ -259,7 +259,7 @@
   // Put the reply text into the contenteditable compose box. Returns false if
   // the box can't be found (selector needs updating).
   function stage(text) {
-    const box = $(SEL.composeBox);
+    const box = composeBox();
     if (!box || !visible(box)) {
       console.warn('[FBM bridge] compose box not found — update selectors.chat.composeBox');
       return false;
@@ -269,6 +269,12 @@
     // events FB's Lexical/Draft editor listens for far more reliably than
     // setting textContent.
     try { document.execCommand('selectAll', false, null); document.execCommand('delete', false, null); } catch (_) {}
+    // If the editor didn't clear, force it — otherwise a retry appends and the
+    // reply gets duplicated inside one message ("texttext").
+    if ((box.textContent || '').trim()) {
+      try { box.textContent = ''; box.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'deleteContentBackward' })); } catch (_) {}
+    }
+    if ((box.textContent || '').trim()) return false;   // still not empty — don't risk doubling
     document.execCommand('insertText', false, text);
     box.dispatchEvent(new InputEvent('input', { bubbles: true, data: text, inputType: 'insertText' }));
     return true;
