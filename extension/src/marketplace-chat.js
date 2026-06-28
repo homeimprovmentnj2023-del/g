@@ -280,20 +280,67 @@
     return true;
   }
 
+  // Find Facebook's Send button. Synthetic Enter is untrusted and ignored, so we
+  // must click the real button (usually a paper-plane icon next to the composer).
+  function findSendButton() {
+    const box = composeBox();
+    // 1) Explicit labels (EN/ES) if present.
+    let btn = document.querySelector(
+      '[aria-label="Send"][role="button"],div[aria-label="Send"],[aria-label="Enviar"][role="button"],' +
+      'div[aria-label="Enviar"],div[aria-label="Press enter to send"],[aria-label="Press enter to send"]'
+    );
+    if (btn && visible(btn)) return btn;
+    // 2) Heuristic: a visible icon button (SVG, no text) on the composer row,
+    //    to the right of the text box.
+    if (box) {
+      const br = box.getBoundingClientRect();
+      const cands = Array.from(document.querySelectorAll('[role="button"]')).filter(b => {
+        if (!visible(b) || (b.textContent || '').trim()) return false;
+        if (!b.querySelector('svg, i, image')) return false;
+        const r = b.getBoundingClientRect();
+        return Math.abs(r.top - br.top) < br.height + 24 && r.left >= br.left - 4; // same row, right side
+      }).sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left);
+      if (cands.length) return cands[cands.length - 1]; // right-most icon = Send
+    }
+    return null;
+  }
+
+  function clickEl(el) {
+    ['pointerdown', 'mousedown', 'mouseup', 'click'].forEach(t =>
+      el.dispatchEvent(new MouseEvent(t, { bubbles: true, cancelable: true, view: window })));
+  }
+
+  // One-time-ish report of the composer buttons, so the exact Send selector can
+  // be confirmed from the dashboard if auto-send still misses.
+  let _sentDbgAt = 0;
+  function reportSendDebug(picked) {
+    if (Date.now() - _sentDbgAt < 5000) return; _sentDbgAt = Date.now();
+    try {
+      const box = composeBox();
+      const br = box ? box.getBoundingClientRect() : null;
+      const btns = Array.from(document.querySelectorAll('[role="button"]')).filter(visible).filter(b => {
+        if (!br) return false; const r = b.getBoundingClientRect();
+        return Math.abs(r.top - br.top) < br.height + 30;     // buttons on the composer row
+      }).map(b => ({ ariaLabel: b.getAttribute('aria-label') || '', text: (b.textContent || '').trim().slice(0, 20), svg: !!b.querySelector('svg, i, image') }));
+      fetch(`${BACKEND}/api/debug`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ kind: 'mp-send-debug', url: location.href, pickedAria: picked ? (picked.getAttribute('aria-label') || '(icon, no label)') : null, composerButtons: btns }),
+      }).catch(() => {});
+    } catch (_) {}
+  }
+
   function pressSend(attempt) {
     const box = composeBox();
     if (box) box.focus();
-    const tgt = (box && document.activeElement && box.contains(document.activeElement)) ? document.activeElement : box;
-    // Primary: Marketplace sends on Enter — dispatch a full key sequence so FB's
-    // editor reliably registers it (a lone keydown is often ignored).
-    if (tgt) ['keydown', 'keypress', 'keyup'].forEach(t =>
-      tgt.dispatchEvent(new KeyboardEvent(t, { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true })));
-    // Fallback on a retry: click an explicit Send button if Facebook shows one.
-    if (attempt && attempt >= 2) {
-      const btn = document.querySelector('div[aria-label="Send"][role="button"],[aria-label="Send"][role="button"],div[aria-label="Press enter to send"]')
-        || Array.from(document.querySelectorAll('[role="button"]')).find(b => /\bsend\b/i.test(b.getAttribute('aria-label') || ''));
-      if (btn && visible(btn)) btn.click();
+    const btn = findSendButton();
+    if (btn) clickEl(btn);
+    else {
+      // Last resort: Enter (works in some locales even if untrusted).
+      const tgt = (box && document.activeElement && box.contains(document.activeElement)) ? document.activeElement : box;
+      if (tgt) ['keydown', 'keypress', 'keyup'].forEach(t =>
+        tgt.dispatchEvent(new KeyboardEvent(t, { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true })));
     }
+    reportSendDebug(btn);
   }
 
   // Heuristic confirmation: after a successful send FB clears the compose box,
