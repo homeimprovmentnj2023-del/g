@@ -229,7 +229,15 @@ function captureFormSnapshot() {
     if (visible(p)) popups.push(trunc(p.outerHTML, 5000));
   });
 
-  return { url: location.href, fields, buttons, popups };
+  // Conversation thread markup — needed to calibrate the Marketplace chat bridge
+  // selectors (message rows, message text, compose box, send button) and to
+  // confirm a thread is a real Marketplace listing chat. Captures structure of
+  // the open conversation only; it's your own data and goes to your localhost.
+  let threadHtml = '';
+  const mainEl = document.querySelector('div[role="main"]');
+  if (mainEl && visible(mainEl)) threadHtml = trunc(mainEl.outerHTML, 30000);
+
+  return { url: location.href, fields, buttons, popups, threadHtml };
 }
 
 async function captureForm(sidebar) {

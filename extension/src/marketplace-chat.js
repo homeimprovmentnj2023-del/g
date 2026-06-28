@@ -32,7 +32,7 @@
     autoSend: true,
     // Ignore messages older than this on first load so we don't reply to history.
     freshnessMs: 2 * 60 * 1000,
-    debounceMs: 800,
+    debounceMs: 350,
     // Send recovery: how many times to retry a send that didn't go through.
     maxSendRetries: 3,
     retryBackoffMs: 1200,
@@ -83,45 +83,93 @@
   const $$ = (s, root = document) => (s ? Array.from(root.querySelectorAll(s)) : []);
   const visible = el => { if (!el) return false; const r = el.getBoundingClientRect(); return r.width > 1 && r.height > 1; };
 
+  // ── Robust reading via Facebook's accessibility labels ─────────────────────
+  // FB's CSS classes are obfuscated and change constantly, but every message
+  // exposes a stable aria-label like "Message sent 5:12 PM by <Name>: <text>".
+  // We read those, and identify the buyer from the compose box's
+  // "Write to <Buyer · Listing>" label — so we only reply to genuine Marketplace
+  // chats and never to our own messages.
+
+  function composeBox() {
+    return document.querySelector(
+      (SEL.composeBox || '') + (SEL.composeBox ? ',' : '') +
+      'div[role="textbox"][contenteditable="true"],[contenteditable="true"][role="textbox"],div[aria-label^="Write to"]'
+    );
+  }
+
+  // The open conversation: title ("Buyer · Listing") + buyer display name.
+  function conversationInfo() {
+    const box = composeBox();
+    const al = box ? (box.getAttribute('aria-label') || '') : '';
+    const m = al.match(/^\s*(?:Write to|Message)\s+(.+?)\s*$/i);
+    const title = m ? m[1].trim() : '';                 // "Luis · Bathtub glaze"
+    const buyer = (title.split('·')[0] || '').trim() || null;
+    return { title, buyer, listing: (title.split('·')[1] || '').trim() || null };
+  }
+
   function threadId() {
-    const m = location.pathname.match(/\/marketplace\/t\/(\d+)/) || location.pathname.match(/\/t\/(\d+)/);
+    const { title } = conversationInfo();
+    if (title) return 'mp_' + title.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
+    const m = location.pathname.match(/\/t\/(\d+)/);
     return m ? m[1] : (location.pathname || 'unknown');
   }
 
-  function contactName() {
-    const el = $(SEL.contactName);
-    return (el?.textContent || '').trim() || null;
+  function contactName() { return conversationInfo().buyer; }
+
+  // All parsed messages in the open thread, in DOM order.
+  function scanMessages() {
+    const out = [];
+    const seenLabels = new Set();
+    document.querySelectorAll('[aria-label]').forEach(el => {
+      const a = el.getAttribute('aria-label') || '';
+      if (!/\bmessage\b/i.test(a)) return;
+      const m = a.match(/\bby\s+(.+?):\s*([\s\S]+?)\s*$/i);   // "…by <Sender>: <text>"
+      if (!m) return;
+      if (seenLabels.has(a)) return; seenLabels.add(a);
+      out.push({ el, sender: m[1].trim(), text: m[2].trim(), raw: a, bot: !!(el.dataset && el.dataset.fbmBot === '1') });
+    });
+    return out;
   }
 
-  // The latest INBOUND (from the buyer, not "You") message bubble + its text.
+  // Latest message ONLY IF it's the buyer's (so the bot answers, and never
+  // replies to itself or to a thread where we had the last word).
   function latestInbound() {
-    const rows = $$(SEL.messageRow).filter(visible);
-    for (let i = rows.length - 1; i >= 0; i--) {
-      const row = rows[i];
-      if (isOutbound(row)) continue;          // skip our own messages
-      const text = readText(row);
-      if (text) return { row, text };
-    }
-    return null;
+    const msgs = scanMessages().filter(m => !m.bot);
+    if (!msgs.length) return null;
+    const last = msgs[msgs.length - 1];
+    const { buyer } = conversationInfo();
+    const fromBuyer = buyer ? last.sender.toLowerCase().includes(buyer.toLowerCase()) : true;
+    return (fromBuyer && last.text) ? { row: last.el, text: last.text, sender: last.sender } : null;
   }
 
-  // Outbound detection: Facebook aligns the sender's own messages differently.
-  // We treat a row as outbound if it matches the outbound marker selector, or
-  // if it carries our injected marker (so we never echo the bot's own reply).
-  function isOutbound(row) {
-    if (row.dataset && row.dataset.fbmBot === '1') return true;
-    if (SEL.outboundMarker && row.querySelector(SEL.outboundMarker)) return true;
-    if (SEL.outboundRowMatch) { try { if (row.matches(SEL.outboundRowMatch)) return true; } catch (_) {} }
-    return false;
-  }
-
-  function readText(row) {
-    const el = SEL.messageText ? row.querySelector(SEL.messageText) : row;
-    return (el?.textContent || '').trim();
+  // ── Self-diagnostic: report what we see to the dashboard (so calibration can
+  //    be verified live, no manual capture needed). Throttled + change-gated.
+  let _diagAt = 0, _diagKey = '';
+  function reportDiag(extra) {
+    try {
+      const msgs = scanMessages();
+      const info = conversationInfo();
+      const key = msgs.map(m => m.raw).join('|').slice(0, 800);
+      if (key === _diagKey && Date.now() - _diagAt < 8000) return;
+      _diagKey = key; _diagAt = Date.now();
+      fetch(`${BACKEND}/api/debug`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          kind: 'mp-bridge-diag', url: location.href, conversation: info,
+          messages: msgs.slice(-8).map(m => ({ sender: m.sender, text: m.text.slice(0, 80), bot: m.bot, raw: m.raw })),
+          ...(extra || {}),
+        }),
+      }).catch(() => {});
+    } catch (_) {}
   }
 
   // ── Bridge core ───────────────────────────────────────────────────────────
   async function check() {
+    reportDiag();
+    // Marketplace-only lock: only act inside a real open Marketplace conversation
+    // (the compose box reads "Write to <Buyer · Listing>"). Ignores everything else.
+    if (!conversationInfo().title) return;
+
     const inbound = latestInbound();
     if (!inbound) return;
 
@@ -277,6 +325,10 @@
       activate();           // first time the inbox DOM becomes available
     }
   }, 1000);
+
+  // Steady heartbeat re-scan so a new buyer message is picked up fast even if the
+  // MutationObserver misses FB's virtualized DOM updates.
+  setInterval(() => { if (active) schedule(); }, 2000);
 
   if (onChatPage()) activate();
 })();
