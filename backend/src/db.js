@@ -17,9 +17,9 @@ const now = () => Math.floor(Date.now() / 1000);
 const empty = {
   templates: [], listings: [], listing_events: [],
   competitors: [], ai_suggestions: [], post_queue: [], logs: [], schedules: [],
-  repost_history: [], debug_snapshots: [],
+  repost_history: [], debug_snapshots: [], accounts: [],
   settings: { auto_repost: false, ai_rewrite: false },
-  counters: { templates: 0, listing_events: 0, ai_suggestions: 0, post_queue: 0, logs: 0, schedules: 0 },
+  counters: { templates: 0, listing_events: 0, ai_suggestions: 0, post_queue: 0, logs: 0, schedules: 0, accounts: 0 },
 };
 
 let data;
@@ -152,13 +152,22 @@ module.exports = {
       title: j.title, price: j.price || '', description: j.description || '',
       location: j.location || '', category: j.category || '', photos: j.photos || '[]',
       delete_url: j.delete_url || null,   // if set, delete this old listing before posting
+      account_id: j.account_id != null ? j.account_id : null, // which FB account/profile posts it
       status: 'pending', result: null, created_at: now(), updated_at: now(),
     };
     data.post_queue.push(row);
     saveNow();
     return row;
   },
-  getNextJob: () => [...data.post_queue].filter(j => j.status === 'pending').sort((a, b) => a.created_at - b.created_at)[0] || null,
+  // Next pending job. With an accountId, returns only that account's jobs (plus
+  // unassigned ones). Without, returns only unassigned jobs (single-account mode).
+  getNextJob: (accountId) => {
+    const pend = [...data.post_queue].filter(j => j.status === 'pending').sort((a, b) => a.created_at - b.created_at);
+    if (accountId != null && accountId !== '') {
+      return pend.find(j => String(j.account_id) === String(accountId) || j.account_id == null) || null;
+    }
+    return pend.find(j => j.account_id == null) || null;
+  },
   getJobs:    () => [...data.post_queue].sort(byCreatedDesc).slice(0, 100),
   getJob:     (id) => data.post_queue.find(j => j.id === Number(id)) || null,
   updateJob:  (id, status, result) => {
@@ -238,4 +247,32 @@ module.exports = {
   },
   getDebug: () => data.debug_snapshots,
   clearDebug: () => { data.debug_snapshots = []; saveNow(); },
+
+  // ── Accounts (each = a Facebook account / Chrome profile, owns a ZIP group) ────
+  createAccount: (a) => {
+    const row = { id: nextId('accounts'), name: a.name || `Account ${data.counters.accounts}`,
+      zips: Array.isArray(a.zips) ? a.zips.map(String) : [], active: a.active !== false, created_at: now() };
+    data.accounts.push(row);
+    saveNow();
+    return row;
+  },
+  getAccounts: () => [...data.accounts].sort((x, y) => x.id - y.id),
+  getAccount:  (id) => data.accounts.find(a => a.id === Number(id)) || null,
+  updateAccount: (id, patch) => {
+    const a = data.accounts.find(x => x.id === Number(id));
+    if (!a) return null;
+    if (patch.name !== undefined) a.name = patch.name;
+    if (patch.zips !== undefined) a.zips = (Array.isArray(patch.zips) ? patch.zips : []).map(String);
+    if (patch.active !== undefined) a.active = !!patch.active;
+    saveNow();
+    return a;
+  },
+  deleteAccount: (id) => { data.accounts = data.accounts.filter(a => a.id !== Number(id)); saveNow(); },
+  // Which account owns a given ZIP (first match).
+  findAccountForZip: (zip) => {
+    if (!zip) return null;
+    const z = String(zip).match(/\d{5}/)?.[0];
+    if (!z) return null;
+    return data.accounts.find(a => a.active && (a.zips || []).some(x => String(x).includes(z))) || null;
+  },
 };

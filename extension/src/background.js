@@ -77,7 +77,11 @@ async function processNextQueueJob() {
 
   let job;
   try {
-    const res = await fetch(`${BACKEND}/api/publish/next`);
+    // This Chrome profile's assigned Facebook account (set in the popup). Only
+    // jobs routed to this account (or unassigned) are picked up here.
+    const { fbmAccountId } = await chrome.storage.local.get('fbmAccountId');
+    const q = fbmAccountId ? `?accountId=${encodeURIComponent(fbmAccountId)}` : '';
+    const res = await fetch(`${BACKEND}/api/publish/next${q}`);
     if (res.status === 204) return; // no pending jobs
     job = await res.json();
   } catch (_) { return; }

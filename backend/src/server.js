@@ -342,11 +342,14 @@ async function queueJobFromTemplate(tpl, extra = {}) {
       db.addLog({ step: 'ai-rewrite', status: 'info', detail: `Fresh wording generated for "${tpl.title}"` });
     } catch (_) { /* fall back to template text */ }
   }
+  // Route the job to the account that owns this ZIP (if multi-account is set up).
+  const acct = db.findAccountForZip(tpl.location);
   return db.createJob({
     template_id: tpl.id, title, price: tpl.price ? String(tpl.price) : '',
     description, location: tpl.location || '', category: tpl.category || '',
     condition: tpl.condition || '', photos: tpl.photos || '[]',
     delete_url: extra.delete_url || null,
+    account_id: acct ? acct.id : null,
   });
 }
 
@@ -379,11 +382,32 @@ app.post('/api/publish/custom', (req, res) => {
   res.status(201).json(job);
 });
 
-// Background script polls this — 204 = nothing to do
-app.get('/api/publish/next', (_req, res) => {
-  const job = db.getNextJob();
+// Background script polls this — 204 = nothing to do. accountId filters jobs to
+// the Chrome profile's assigned Facebook account.
+app.get('/api/publish/next', (req, res) => {
+  const job = db.getNextJob(req.query.accountId);
   job ? res.json(job) : res.sendStatus(204);
 });
+
+// ── Accounts (multi Facebook account / Chrome profile support) ─────────────────
+app.get('/api/accounts', (_req, res) => {
+  const jobs = db.getJobs();
+  const accounts = db.getAccounts().map(a => ({
+    ...a,
+    pending: jobs.filter(j => String(j.account_id) === String(a.id) && j.status === 'pending').length,
+  }));
+  res.json(accounts);
+});
+app.post('/api/accounts', (req, res) => {
+  const { name, zips } = req.body || {};
+  if (!name) return res.status(400).json({ error: 'name required' });
+  res.status(201).json(db.createAccount({ name, zips }));
+});
+app.patch('/api/accounts/:id', (req, res) => {
+  const a = db.updateAccount(req.params.id, req.body || {});
+  a ? res.json(a) : res.status(404).json({ error: 'Not found' });
+});
+app.delete('/api/accounts/:id', (req, res) => { db.deleteAccount(req.params.id); res.json({ ok: true }); });
 
 app.get('/api/publish/queue', (_req, res) => res.json(db.getJobs()));
 

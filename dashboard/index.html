@@ -68,6 +68,7 @@
     <button data-panel="photos">Photo Library</button>
     <button data-panel="competitors">Competitors</button>
     <button data-panel="suggestions">AI Suggestions</button>
+    <button data-panel="accounts">Accounts</button>
     <button data-panel="scheduler">Auto-Pilot</button>
     <button data-panel="queue">Publish Queue</button>
     <button data-panel="logs">Logs</button>
@@ -146,6 +147,23 @@
         <span style="color:var(--dim);font-size:12px;">Scan from the extension sidebar on a browse page</span>
       </div>
       <div id="competitors-table"></div>
+    </section>
+  </div>
+
+  <!-- Accounts -->
+  <div id="panel-accounts" class="panel">
+    <section>
+      <div class="toolbar">
+        <h2>Facebook Accounts</h2>
+        <button class="btn btn-primary" id="btn-new-account">+ New Account</button>
+      </div>
+      <p style="color:var(--dim);font-size:12px;margin-bottom:6px">
+        Each account = one Facebook login in its own Chrome profile, owning a group of ZIPs. Posts auto-route by ZIP to the right account.
+      </p>
+      <p style="background:#fff8e1;border:1px solid #ffe0a3;border-radius:8px;padding:10px;font-size:12px;color:#8a5a00;margin-bottom:14px">
+        Setup per account: open a <strong>separate Chrome profile</strong> (chrome://profiles → Add), log into that Facebook account, install this extension there, then in the extension popup pick this account under “This Chrome profile posts as.”
+      </p>
+      <div id="accounts-list"></div>
     </section>
   </div>
 
@@ -249,6 +267,21 @@
     <div class="modal-actions">
       <button class="btn btn-primary" id="btn-save-job">Add to Queue</button>
       <button class="btn" id="btn-cancel-job">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- Account Modal -->
+<div class="modal-bg" id="modal-account">
+  <div class="modal">
+    <h3>Facebook Account</h3>
+    <label>Account name (e.g. "Florida account")</label>
+    <input id="acct-name" placeholder="Florida account" />
+    <label>ZIP codes this account owns (paste areas; only 5-digit codes are used)</label>
+    <textarea id="acct-zips" rows="6" placeholder="South Florida: 33156 33326 33486&#10;Tampa: 33629 33511 33710"></textarea>
+    <div class="modal-actions">
+      <button class="btn btn-primary" id="btn-save-account">Save</button>
+      <button class="btn" id="btn-cancel-account">Cancel</button>
     </div>
   </div>
 </div>
@@ -392,6 +425,77 @@ function loadPanel(name) {
   if (name === 'logs')         loadLogs();
   if (name === 'scheduler')    loadSchedules();
   if (name === 'debug')        loadDebug();
+  if (name === 'accounts')     loadAccounts();
+}
+
+// ── Accounts ────────────────────────────────────────────────────────────────
+
+async function loadAccounts() {
+  const accounts = await get('/api/accounts');
+  const el = document.getElementById('accounts-list');
+  if (!accounts.length) {
+    el.innerHTML = '<p class="empty">No accounts yet. Add one per Facebook account, each owning a group of ZIPs.</p>';
+    return;
+  }
+  el.innerHTML = `<table>
+    <thead><tr><th>Account</th><th>ZIPs</th><th>Pending</th><th>Status</th><th>Actions</th></tr></thead>
+    <tbody>${accounts.map(a => `
+      <tr>
+        <td><strong>${esc(a.name)}</strong> <span style="color:var(--dim);font-size:11px">id ${a.id}</span></td>
+        <td style="max-width:340px;font-size:12px">${(a.zips || []).map(esc).join(', ') || '—'}</td>
+        <td>${a.pending || 0}</td>
+        <td><span class="badge" style="background:${a.active ? '#d4edda' : '#e2e3e5'};color:${a.active ? '#155724' : '#383d41'}">${a.active ? 'active' : 'paused'}</span></td>
+        <td style="white-space:nowrap">
+          <button class="btn btn-sm" onclick="editAccount(${a.id})">Edit</button>
+          <button class="btn btn-sm" onclick="toggleAccount(${a.id}, ${!a.active})">${a.active ? 'Pause' : 'Resume'}</button>
+          <button class="btn btn-sm btn-danger" onclick="deleteAccount(${a.id})">Delete</button>
+        </td>
+      </tr>`).join('')}
+    </tbody>
+  </table>`;
+}
+
+let editingAccountId = null;
+document.getElementById('btn-new-account').onclick = () => {
+  editingAccountId = null;
+  document.getElementById('acct-name').value = '';
+  document.getElementById('acct-zips').value = '';
+  document.getElementById('modal-account').classList.add('open');
+};
+document.getElementById('btn-cancel-account').onclick = () => document.getElementById('modal-account').classList.remove('open');
+
+async function editAccount(id) {
+  const accounts = await get('/api/accounts');
+  const a = accounts.find(x => x.id === id);
+  if (!a) return;
+  editingAccountId = id;
+  document.getElementById('acct-name').value = a.name;
+  document.getElementById('acct-zips').value = (a.zips || []).join(' ');
+  document.getElementById('modal-account').classList.add('open');
+}
+
+document.getElementById('btn-save-account').onclick = async () => {
+  const name = document.getElementById('acct-name').value.trim();
+  if (!name) { showToast('Name required'); return; }
+  const zips = (document.getElementById('acct-zips').value.match(/\b\d{5}\b/g)) || [];
+  if (editingAccountId) {
+    await fetch(`/api/accounts/${editingAccountId}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, zips }) });
+  } else {
+    await post('/api/accounts', { name, zips });
+  }
+  document.getElementById('modal-account').classList.remove('open');
+  loadAccounts();
+  showToast('Account saved.');
+};
+
+async function toggleAccount(id, active) {
+  await fetch(`/api/accounts/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ active }) });
+  loadAccounts();
+}
+async function deleteAccount(id) {
+  if (!confirm('Delete this account? (its ZIPs become unassigned)')) return;
+  await del(`/api/accounts/${id}`);
+  loadAccounts();
 }
 
 async function loadDebug() {
