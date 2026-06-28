@@ -63,6 +63,7 @@ function buildSidebarHTML() {
       <div id="fbm-tab-templates" class="fbm-panel fbm-active">
         <button id="fbm-new-template">+ New Template</button>
         <button id="fbm-template-from-listing">📋 Save THIS listing as Template</button>
+        <button id="fbm-capture-form">🔧 Capture Form (debug)</button>
         <div id="fbm-template-list"><p class="fbm-dim">Loading…</p></div>
       </div>
       <div id="fbm-tab-listings" class="fbm-panel">
@@ -98,6 +99,7 @@ function wireupSidebar(sidebar) {
   sidebar.querySelector('#fbm-scan-competitors').onclick = () => scanAndReportCompetitors(sidebar).catch(reportErr);
   sidebar.querySelector('#fbm-new-template').onclick = () => openNewTemplateForm(sidebar);
   sidebar.querySelector('#fbm-template-from-listing').onclick = () => saveListingAsTemplate(sidebar).catch(reportErr);
+  sidebar.querySelector('#fbm-capture-form').onclick = () => captureForm(sidebar).catch(reportErr);
 
   loadTemplates(sidebar);
 }
@@ -186,6 +188,67 @@ function openNewTemplateForm(sidebar) {
   `;
   sidebar.querySelector('#fbm-cancel-tmpl').onclick = () => loadTemplates(sidebar);
   sidebar.querySelector('#fbm-save-tmpl').onclick = () => saveNewTemplate(sidebar).catch(reportErr);
+}
+
+// Captures the real structure of the current Facebook form/page so the exact
+// markup (field labels, button roles, open dropdown options) can be inspected
+// and precise selectors written — no more guessing. Privacy-safe: it records
+// element structure/labels, not your account credentials.
+function captureFormSnapshot() {
+  const visible = el => { const r = el.getBoundingClientRect(); return r.width > 2 && r.height > 2; };
+  const trunc = (s, n = 6000) => (s || '').slice(0, n);
+
+  const fields = [];
+  document.querySelectorAll('input, textarea, [contenteditable="true"]').forEach(el => {
+    if (!visible(el)) return;
+    const lab = el.closest('label');
+    fields.push({
+      tag: el.tagName.toLowerCase(),
+      type: el.getAttribute('type') || '',
+      ariaLabel: el.getAttribute('aria-label') || '',
+      placeholder: el.getAttribute('placeholder') || '',
+      labelText: (lab?.textContent || '').trim().slice(0, 80),
+      role: el.getAttribute('role') || '',
+    });
+  });
+
+  const buttons = [];
+  const seenBtn = new Set();
+  document.querySelectorAll('[role="button"], [role="combobox"]').forEach(el => {
+    if (!visible(el)) return;
+    const t = (el.textContent || '').trim();
+    if (!t || t.length > 40 || seenBtn.has(t)) return;
+    seenBtn.add(t);
+    buttons.push({ text: t, ariaDisabled: el.getAttribute('aria-disabled') || '', ariaLabel: el.getAttribute('aria-label') || '' });
+  });
+
+  // Any open dropdown / dialog / autocomplete — capture raw markup (most useful
+  // for category & ZIP). Open the dropdown first, then capture.
+  const popups = [];
+  document.querySelectorAll('[role="listbox"], [role="menu"], [role="dialog"]').forEach(p => {
+    if (visible(p)) popups.push(trunc(p.outerHTML, 5000));
+  });
+
+  return { url: location.href, fields, buttons, popups };
+}
+
+async function captureForm(sidebar) {
+  showToast('Capturing form structure…');
+  const snap = captureFormSnapshot();
+  await api('/api/debug', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(snap),
+  }, { quiet: true });
+
+  // Also drop it in a copyable textarea right in the sidebar.
+  const list = sidebar.querySelector('#fbm-template-list');
+  const text = JSON.stringify(snap, null, 2);
+  list.innerHTML = `
+    <p class="fbm-dim">Captured ${snap.fields.length} fields, ${snap.buttons.length} buttons, ${snap.popups.length} open dropdown(s). Sent to dashboard → Debug. You can also copy it:</p>
+    <textarea readonly style="width:100%;height:220px;font-size:10px">${escHtml(text)}</textarea>
+    <button id="fbm-copy-snap">Copy</button>
+    <button id="fbm-back-tpl">Back</button>`;
+  list.querySelector('#fbm-copy-snap').onclick = () => { navigator.clipboard?.writeText(text); showToast('Copied — paste it to me'); };
+  list.querySelector('#fbm-back-tpl').onclick = () => loadTemplates(sidebar);
 }
 
 // Copy the current Facebook listing page into a reusable template (incl. photos).

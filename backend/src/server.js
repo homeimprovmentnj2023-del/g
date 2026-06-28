@@ -251,6 +251,11 @@ app.post('/api/listings/:id/repost', async (req, res) => {
 app.get('/api/settings', (_req, res) => res.json(db.getSettings()));
 app.patch('/api/settings', (req, res) => res.json(db.setSettings(req.body || {})));
 
+// ── Debug DOM snapshots ─────────────────────────────────────────────────────────
+app.post('/api/debug', (req, res) => { db.addDebug(req.body || {}); res.json({ ok: true }); });
+app.get('/api/debug', (_req, res) => res.json(db.getDebug()));
+app.delete('/api/debug', (_req, res) => { db.clearDebug(); res.json({ ok: true }); });
+
 // ── Competitors ───────────────────────────────────────────────────────────────
 
 app.get('/api/competitors', (_req, res) => res.json(db.getCompetitors()));

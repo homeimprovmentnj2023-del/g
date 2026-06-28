@@ -17,7 +17,7 @@ const now = () => Math.floor(Date.now() / 1000);
 const empty = {
   templates: [], listings: [], listing_events: [],
   competitors: [], ai_suggestions: [], post_queue: [], logs: [], schedules: [],
-  repost_history: [],
+  repost_history: [], debug_snapshots: [],
   settings: { auto_repost: false, ai_rewrite: false },
   counters: { templates: 0, listing_events: 0, ai_suggestions: 0, post_queue: 0, logs: 0, schedules: 0 },
 };
@@ -229,4 +229,13 @@ module.exports = {
   addRepost: (templateId) => { data.repost_history.push({ template_id: Number(templateId), at: now() }); saveNow(); },
   countRecentReposts: (templateId, sinceSeconds) =>
     data.repost_history.filter(r => r.template_id === Number(templateId) && r.at >= now() - sinceSeconds).length,
+
+  // ── Debug DOM snapshots (to capture Facebook's real form markup once) ──────────
+  addDebug: (snap) => {
+    data.debug_snapshots.unshift({ at: now(), ...snap });
+    data.debug_snapshots = data.debug_snapshots.slice(0, 10);
+    saveNow();
+  },
+  getDebug: () => data.debug_snapshots,
+  clearDebug: () => { data.debug_snapshots = []; saveNow(); },
 };
