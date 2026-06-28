@@ -57,4 +57,34 @@ window.FBMScraper = {
     const seen = new Set();
     return results.filter(c => seen.has(c.id) ? false : seen.add(c.id));
   },
+
+  // Scrapes the current listing page into a template: title, price, description,
+  // and the listing's photo URLs (the large Facebook CDN images on the page).
+  scrapeListingForTemplate() {
+    const cur = this.scrapeCurrentListing() || {};
+    const title = cur.title || document.querySelector('h1')?.textContent?.trim() || '';
+
+    // Collect the big photos: Facebook CDN images that are reasonably large
+    // (skip avatars, icons, reaction images). Dedupe by base URL.
+    const photoUrls = [];
+    const seen = new Set();
+    document.querySelectorAll('img[src*="scontent"], img[src*="fbcdn"]').forEach(img => {
+      const w = img.naturalWidth || img.width || 0;
+      const h = img.naturalHeight || img.height || 0;
+      if (w < 250 || h < 250) return;                 // skip small images (avatars/icons)
+      const src = img.currentSrc || img.src;
+      if (!src) return;
+      const key = src.split('?')[0];
+      if (seen.has(key)) return; seen.add(key);
+      photoUrls.push(src);
+    });
+
+    return {
+      title,
+      price: cur.price || '',
+      description: cur.description || '',
+      url: cur.url || location.href,
+      photoUrls: photoUrls.slice(0, 10),
+    };
+  },
 };

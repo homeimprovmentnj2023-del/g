@@ -105,8 +105,12 @@
     <section>
       <div class="toolbar">
         <h2>Templates</h2>
-        <button class="btn btn-primary" id="btn-new-template">+ New Template</button>
+        <button class="btn" id="btn-template-from-competitors" style="color:#1877f2;border-color:#1877f2">🤖 Build from competitors</button>
+        <button class="btn btn-primary" id="btn-new-template" style="margin-left:4px">+ New Template</button>
       </div>
+      <p style="color:var(--dim);font-size:12px;margin-bottom:12px">
+        Tip: open one of your existing Facebook listings and use “📋 Save THIS listing as Template” in the extension sidebar to copy it (with photos).
+      </p>
       <div id="templates-table"></div>
     </section>
   </div>
@@ -469,6 +473,17 @@ document.getElementById('tmpl-photo-file').onchange = async (e) => {
     } catch (_) { showToast('Could not read ' + f.name); }
   }
   e.target.value = '';
+};
+
+// Build a template automatically from competitor data via AI
+document.getElementById('btn-template-from-competitors').onclick = async () => {
+  const notes = prompt('What do you sell? (a few words — AI will write a full listing using your scanned competitor data)\n\ne.g. "bathtub reglazing service, Bronx"');
+  if (!notes) return;
+  showToast('AI is building a template from competitor data…');
+  const res = await post('/api/templates/from-ai', { notes });
+  if (res.error) { showToast('Error: ' + res.error); return; }
+  showToast(res.ai ? 'Template built! Add a photo, then it’s ready.' : 'Template built (basic — add ANTHROPIC_API_KEY for smarter results).');
+  loadTemplates();
 };
 
 // New template modal

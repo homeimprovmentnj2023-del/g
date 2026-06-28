@@ -54,6 +54,28 @@ app.post('/api/photos', (req, res) => {
   res.json({ url: `http://localhost:${PORT}/photos/${name}` });
 });
 
+// Download a remote image (e.g. a Facebook CDN photo from an existing listing)
+// server-side — no browser CORS — and store it locally for reuse.
+async function downloadImage(url) {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  const ct = (r.headers.get('content-type') || '').toLowerCase();
+  if (!ct.startsWith('image/')) throw new Error('not an image');
+  const buf = Buffer.from(await r.arrayBuffer());
+  if (buf.length > 20 * 1024 * 1024) throw new Error('image too large');
+  const ext = (ct.split('/')[1] || 'jpg').replace('jpeg', 'jpg').replace(/[^\w]/g, '') || 'jpg';
+  const name = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
+  fs.writeFileSync(path.join(PHOTO_DIR, name), buf);
+  return `http://localhost:${PORT}/photos/${name}`;
+}
+
+app.post('/api/photos/from-url', async (req, res) => {
+  const { url } = req.body || {};
+  if (!url) return res.status(400).json({ error: 'url required' });
+  try { res.json({ url: await downloadImage(url) }); }
+  catch (err) { res.status(400).json({ error: err.message }); }
+});
+
 // ── Templates ─────────────────────────────────────────────────────────────────
 
 app.get('/api/templates', (_req, res) => res.json(db.getTemplates()));
@@ -72,6 +94,38 @@ app.post('/api/templates', (req, res) => {
 app.patch('/api/templates/:id', (req, res) => {
   const updated = db.updateTemplate(req.params.id, req.body || {});
   updated ? res.json(updated) : res.status(404).json({ error: 'Not found' });
+});
+
+// Build a template automatically with AI from competitor data + a short prompt.
+app.post('/api/templates/from-ai', async (req, res) => {
+  const { notes, title, category } = req.body || {};
+  if (!notes && !title) return res.status(400).json({ error: 'Provide notes or a title (what you sell)' });
+  try {
+    const c = await ai.composeListing({ title, notes, category, competitors: db.getCompetitors() });
+    const tpl = db.createTemplate({
+      title: c.title, price: c.price, location: req.body.location || '',
+      category: c.category, description: c.description, photos: [],
+    });
+    res.status(201).json({ template: tpl, ai: c._ai });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Build a template by copying an existing listing (title/price/description +
+// its photos, downloaded and stored locally for reuse).
+app.post('/api/templates/from-listing', async (req, res) => {
+  const { title, price, description, category, location, photoUrls } = req.body || {};
+  if (!title) return res.status(400).json({ error: 'title required (could not read the listing)' });
+
+  const stored = [];
+  for (const url of (Array.isArray(photoUrls) ? photoUrls : []).slice(0, 10)) {
+    try { stored.push(await downloadImage(url)); } catch (_) { /* skip unreachable images */ }
+  }
+  const tpl = db.createTemplate({
+    title, price: price ? String(price).replace(/[^0-9.]/g, '') : '',
+    description: description || '', category: category || '', location: location || '',
+    photos: stored,
+  });
+  res.status(201).json({ template: tpl, photosSaved: stored.length });
 });
 
 app.delete('/api/templates/:id', (req, res) => {

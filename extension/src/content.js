@@ -62,6 +62,7 @@ function buildSidebarHTML() {
     <div id="fbm-content">
       <div id="fbm-tab-templates" class="fbm-panel fbm-active">
         <button id="fbm-new-template">+ New Template</button>
+        <button id="fbm-template-from-listing">📋 Save THIS listing as Template</button>
         <div id="fbm-template-list"><p class="fbm-dim">Loading…</p></div>
       </div>
       <div id="fbm-tab-listings" class="fbm-panel">
@@ -96,6 +97,7 @@ function wireupSidebar(sidebar) {
   sidebar.querySelector('#fbm-scan-listings').onclick = () => scanAndReportListings(sidebar).catch(reportErr);
   sidebar.querySelector('#fbm-scan-competitors').onclick = () => scanAndReportCompetitors(sidebar).catch(reportErr);
   sidebar.querySelector('#fbm-new-template').onclick = () => openNewTemplateForm(sidebar);
+  sidebar.querySelector('#fbm-template-from-listing').onclick = () => saveListingAsTemplate(sidebar).catch(reportErr);
 
   loadTemplates(sidebar);
 }
@@ -184,6 +186,25 @@ function openNewTemplateForm(sidebar) {
   `;
   sidebar.querySelector('#fbm-cancel-tmpl').onclick = () => loadTemplates(sidebar);
   sidebar.querySelector('#fbm-save-tmpl').onclick = () => saveNewTemplate(sidebar).catch(reportErr);
+}
+
+// Copy the current Facebook listing page into a reusable template (incl. photos).
+async function saveListingAsTemplate(sidebar) {
+  if (!location.href.includes('/marketplace/item/')) {
+    showToast('Open one of your listings first, then click this.');
+    return;
+  }
+  const data = window.FBMScraper.scrapeListingForTemplate();
+  if (!data.title) { showToast('Could not read this listing. Scroll so the title/photos are visible, then retry.'); return; }
+  showToast(`Saving "${data.title}" (${data.photoUrls.length} photo(s))…`);
+  const res = await api('/api/templates/from-listing', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) return;
+  showToast(`Template saved with ${res.data?.photosSaved ?? 0} photo(s)!`);
+  loadTemplates(sidebar);
 }
 
 async function saveNewTemplate(sidebar) {
