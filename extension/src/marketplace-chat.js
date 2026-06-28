@@ -30,16 +30,50 @@
     // Ignore messages older than this on first load so we don't reply to history.
     freshnessMs: 2 * 60 * 1000,
     debounceMs: 800,
+    // Send recovery: how many times to retry a send that didn't go through.
+    maxSendRetries: 3,
+    retryBackoffMs: 1200,
+    sendVerifyMs: 700,   // wait this long, then confirm the compose box cleared
   };
 
   const SEL = (window.FBM_SELECTORS && window.FBM_SELECTORS.chat) || {};
   const seen = new Set();           // message keys already forwarded
   let booted = Date.now();
   let timer = null;
+  let sentCount = 0;
 
   chrome.storage?.local?.get?.(['mpAutoSend'], v => {
     if (typeof v?.mpAutoSend === 'boolean') CONFIG.autoSend = v.mpAutoSend;
   });
+
+  // ── Status badge (so you can confirm it's running unattended) ───────────────
+  const badge = document.createElement('div');
+  badge.id = 'fbm-bridge-badge';
+  badge.style.cssText = [
+    'position:fixed', 'bottom:16px', 'left:16px', 'z-index:2147483647',
+    'font:600 12px/1.3 -apple-system,Segoe UI,Roboto,sans-serif',
+    'padding:7px 11px', 'border-radius:9px', 'color:#fff',
+    'background:#1f2937', 'box-shadow:0 2px 10px rgba(0,0,0,.3)',
+    'display:flex', 'align-items:center', 'gap:7px', 'cursor:default',
+    'max-width:300px', 'user-select:none',
+  ].join(';');
+  const dot = document.createElement('span');
+  dot.style.cssText = 'width:9px;height:9px;border-radius:50%;flex:0 0 auto;background:#22c55e';
+  const label = document.createElement('span');
+  badge.append(dot, label);
+  const mountBadge = () => { if (!document.getElementById('fbm-bridge-badge')) document.body.appendChild(badge); };
+  document.body ? mountBadge() : window.addEventListener('DOMContentLoaded', mountBadge);
+
+  const COLORS = { ok: '#22c55e', busy: '#f59e0b', err: '#ef4444', idle: '#22c55e' };
+  function setStatus(kind, text) {
+    dot.style.background = COLORS[kind] || COLORS.idle;
+    if (kind === 'busy') { dot.style.animation = 'fbmPulse 1s infinite'; } else { dot.style.animation = 'none'; }
+    label.textContent = text;
+  }
+  // keyframes for the pulse
+  const kf = document.createElement('style');
+  kf.textContent = '@keyframes fbmPulse{0%,100%{opacity:1}50%{opacity:.35}}';
+  (document.head || document.documentElement).appendChild(kf);
 
   // ── DOM helpers ───────────────────────────────────────────────────────────
   const $  = (s, root = document) => (s ? root.querySelector(s) : null);
@@ -108,46 +142,94 @@
 
     let reply;
     try {
+      setStatus('busy', 'Asking chatbot…');
       const res = await fetch(`${BACKEND}/api/marketplace/incoming`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       });
       const data = await res.json().catch(() => null);
-      if (!res.ok) { console.warn('[FBM bridge] backend error', res.status, data); return; }
+      if (!res.ok) {
+        console.warn('[FBM bridge] backend error', res.status, data);
+        setStatus('err', `Backend ${res.status} — see dashboard Logs`);
+        seen.delete(key);                       // allow a retry on the next tick
+        return;
+      }
       reply = data && (data.reply || data.text || data.message);
     } catch (err) {
       console.warn('[FBM bridge] cannot reach backend — keep start.bat running.', err.message);
+      setStatus('err', 'Backend offline — run start.bat');
+      seen.delete(key);
       return;
     }
 
-    if (reply) await deliverReply(String(reply));
+    if (!reply) { setStatus('err', 'Empty reply from chatbot'); return; }
+
+    const ok = await deliverReply(String(reply));
+    if (ok) {
+      sentCount++;
+      setStatus('ok', `Sent ✓ ${sentCount} · ${new Date().toLocaleTimeString()}`);
+    } else {
+      setStatus('err', 'Send failed — check selectors.chat');
+      seen.delete(key);                          // let it try again next tick
+    }
   }
 
-  // Type the reply into the compose box; send only if autoSend is on.
+  // Type the reply into the compose box and (if autoSend) send it, verifying it
+  // actually went out and retrying a few times before giving up.
   async function deliverReply(text) {
-    const box = $(SEL.composeBox);
-    if (!box) { console.warn('[FBM bridge] compose box not found — update selectors.chat.composeBox'); return; }
+    if (!CONFIG.autoSend) {
+      const staged = stage(text);
+      setStatus(staged ? 'busy' : 'err', staged ? 'Reply staged — press Enter' : 'Compose box not found');
+      return staged; // "delivered" in suggest mode = successfully staged
+    }
 
+    for (let attempt = 1; attempt <= CONFIG.maxSendRetries; attempt++) {
+      setStatus('busy', attempt === 1 ? 'Sending…' : `Sending… (retry ${attempt - 1})`);
+      if (!stage(text)) { await sleep(CONFIG.retryBackoffMs); continue; }
+      pressSend();
+      await sleep(CONFIG.sendVerifyMs);
+      if (sendLooksConfirmed(text)) return true;  // box cleared / reply visible
+      await sleep(CONFIG.retryBackoffMs * attempt);
+    }
+    return false;
+  }
+
+  // Put the reply text into the contenteditable compose box. Returns false if
+  // the box can't be found (selector needs updating).
+  function stage(text) {
+    const box = $(SEL.composeBox);
+    if (!box || !visible(box)) {
+      console.warn('[FBM bridge] compose box not found — update selectors.chat.composeBox');
+      return false;
+    }
     box.focus();
-    // Facebook uses a contenteditable Lexical/Draft field; insertText fires the
-    // input events FB listens for far more reliably than setting textContent.
+    // Clear anything already typed, then insert. execCommand fires the input
+    // events FB's Lexical/Draft editor listens for far more reliably than
+    // setting textContent.
+    try { document.execCommand('selectAll', false, null); document.execCommand('delete', false, null); } catch (_) {}
     document.execCommand('insertText', false, text);
     box.dispatchEvent(new InputEvent('input', { bubbles: true, data: text, inputType: 'insertText' }));
-
-    if (!CONFIG.autoSend) {
-      console.info('[FBM bridge] reply staged (suggest mode). Press Enter to send, or enable autoSend.');
-      return;
-    }
-
-    // Auto-send: prefer the explicit send button, fall back to Enter.
-    const btn = $(SEL.sendButton);
-    if (btn && visible(btn)) {
-      btn.click();
-    } else {
-      box.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
-    }
+    return true;
   }
+
+  function pressSend() {
+    const btn = $(SEL.sendButton);
+    if (btn && visible(btn)) { btn.click(); return; }
+    const box = $(SEL.composeBox);
+    box?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
+  }
+
+  // Heuristic confirmation: after a successful send FB clears the compose box,
+  // so an empty box (and our text now appearing in the thread) means it went.
+  function sendLooksConfirmed(text) {
+    const box = $(SEL.composeBox);
+    const boxEmpty = !box || !(box.textContent || '').trim();
+    const inThread = $$(SEL.messageRow).some(r => (r.textContent || '').includes(text.slice(0, 40)));
+    return boxEmpty || inThread;
+  }
+
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
 
   // ── Observe the thread for new messages ─────────────────────────────────────
   function schedule() {
@@ -165,5 +247,6 @@
   }, 1000);
 
   schedule();
+  setStatus('idle', CONFIG.autoSend ? 'Bridge active · auto-reply on' : 'Bridge active · review mode');
   console.info('[FBM bridge] Marketplace → chatbot bridge active (autoSend:', CONFIG.autoSend, ')');
 })();
