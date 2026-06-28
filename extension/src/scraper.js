@@ -110,6 +110,17 @@ window.FBMScraper = {
       addUrl(img.currentSrc || img.src);
     });
 
-    return { title, price, description, category, url: location.href, photoUrls: photoUrls.slice(0, 10) };
+    // Location — Facebook item pages show "Listed in City, ST" or a place link.
+    let listingLocation = '';
+    const li = [...document.querySelectorAll('a, span, div')]
+      .find(e => /^\s*listed in /i.test(e.textContent || '') && (e.textContent || '').length < 60);
+    if (li) listingLocation = li.textContent.replace(/^\s*listed in\s*/i, '').trim();
+    if (!listingLocation) {
+      const m = [...document.querySelectorAll('span, a')]
+        .find(e => /[A-Za-z]+,\s*[A-Z]{2}\b/.test(e.textContent || '') && (e.textContent || '').length < 40);
+      if (m) listingLocation = m.textContent.trim();
+    }
+
+    return { title, price, description, category, location: listingLocation, url: location.href, photoUrls: photoUrls.slice(0, 10) };
   },
 };
