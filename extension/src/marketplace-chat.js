@@ -41,6 +41,8 @@
 
   const SEL = (window.FBM_SELECTORS && window.FBM_SELECTORS.chat) || {};
   const seen = new Set();           // message keys already forwarded
+  const botSent = new Set();        // normalized texts WE sent — never treat as inbound
+  const norm = s => String(s || '').replace(/\s+/g, ' ').trim().toLowerCase();
   let booted = Date.now();
   let timer = null;
   let sentCount = 0;
@@ -134,7 +136,7 @@
   // Latest message ONLY IF it's the buyer's (so the bot answers, and never
   // replies to itself or to a thread where we had the last word).
   function latestInbound() {
-    const msgs = scanMessages().filter(m => !m.bot);
+    const msgs = scanMessages().filter(m => !m.bot && !botSent.has(norm(m.text)));
     if (!msgs.length) return null;
     const last = msgs[msgs.length - 1];
     const { buyer } = conversationInfo();
@@ -235,6 +237,7 @@
       return staged; // "delivered" in suggest mode = successfully staged
     }
 
+    botSent.add(norm(text));            // never answer our own reply (name-collision safe)
     for (let attempt = 1; attempt <= CONFIG.maxSendRetries; attempt++) {
       setStatus('busy', attempt === 1 ? 'Sending…' : `Sending… (retry ${attempt - 1})`);
       if (!stage(text)) { await sleep(CONFIG.retryBackoffMs); continue; }
@@ -274,10 +277,11 @@
   // Heuristic confirmation: after a successful send FB clears the compose box,
   // so an empty box (and our text now appearing in the thread) means it went.
   function sendLooksConfirmed(text) {
-    const box = $(SEL.composeBox);
+    const box = composeBox();
     const boxEmpty = !box || !(box.textContent || '').trim();
-    const inThread = $$(SEL.messageRow).some(r => (r.textContent || '').includes(text.slice(0, 40)));
-    return boxEmpty || inThread;
+    // Our text now visible as a sent message => it went (avoids re-sending = duplicates).
+    const appeared = scanMessages().some(m => norm(m.text) === norm(text) || norm(m.text).includes(norm(text).slice(0, 40)));
+    return boxEmpty || appeared;
   }
 
   const sleep = ms => new Promise(r => setTimeout(r, ms));
