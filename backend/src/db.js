@@ -56,6 +56,7 @@ module.exports = {
       price:       t.price != null && t.price !== '' ? Number(t.price) : null,
       location:    t.location || null,
       category:    t.category || null,
+      condition:   t.condition || null,
       description: t.description || null,
       photos:      JSON.stringify(t.photos || []),
       created_at:  now(),
@@ -73,6 +74,7 @@ module.exports = {
     if (patch.price       !== undefined) t.price       = patch.price !== '' && patch.price != null ? Number(patch.price) : null;
     if (patch.location    !== undefined) t.location    = patch.location || null;
     if (patch.category    !== undefined) t.category    = patch.category || null;
+    if (patch.condition   !== undefined) t.condition   = patch.condition || null;
     if (patch.description !== undefined) t.description = patch.description || null;
     if (patch.photos      !== undefined) t.photos      = JSON.stringify(patch.photos || []);
     saveNow();

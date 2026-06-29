@@ -94,6 +94,27 @@ app.delete('/api/photos/:name', (req, res) => {
   catch (err) { res.status(404).json({ error: 'not found' }); }
 });
 
+// Content hashes of every stored photo — used by the dashboard to detect exact
+// duplicate images before adding/publishing. Additive; nothing else relies on it.
+const crypto = require('crypto');
+app.get('/api/photos/hashes', (_req, res) => {
+  let out = [];
+  try {
+    out = fs.readdirSync(PHOTO_DIR)
+      .filter(f => /\.(jpe?g|png|webp|gif)$/i.test(f))
+      .map(f => {
+        const buf = fs.readFileSync(path.join(PHOTO_DIR, f));
+        return {
+          name: f,
+          url: `http://localhost:${PORT}/photos/${f}`,
+          hash: crypto.createHash('sha256').update(buf).digest('hex'),
+          at: fs.statSync(path.join(PHOTO_DIR, f)).mtimeMs,
+        };
+      });
+  } catch (_) {}
+  res.json(out);
+});
+
 // ── Templates ─────────────────────────────────────────────────────────────────
 
 app.get('/api/templates', (_req, res) => res.json(db.getTemplates()));
@@ -104,9 +125,9 @@ app.get('/api/templates/:id', (req, res) => {
 });
 
 app.post('/api/templates', (req, res) => {
-  const { title, price, location, category, description, photos } = req.body;
+  const { title, price, location, category, condition, description, photos } = req.body;
   if (!title) return res.status(400).json({ error: 'title required' });
-  res.status(201).json(db.createTemplate({ title, price, location, category, description, photos }));
+  res.status(201).json(db.createTemplate({ title, price, location, category, condition, description, photos }));
 });
 
 app.patch('/api/templates/:id', (req, res) => {
