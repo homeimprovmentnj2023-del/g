@@ -285,18 +285,15 @@
       return false;
     }
     box.focus();
-    // Clear anything already typed, then insert. execCommand fires the input
-    // events FB's Lexical/Draft editor listens for far more reliably than
-    // setting textContent.
-    try { document.execCommand('selectAll', false, null); document.execCommand('delete', false, null); } catch (_) {}
-    // If the editor didn't clear, force it — otherwise a retry appends and the
-    // reply gets duplicated inside one message ("texttext").
-    if ((box.textContent || '').trim()) {
-      try { box.textContent = ''; box.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'deleteContentBackward' })); } catch (_) {}
-    }
-    if ((box.textContent || '').trim()) return false;   // still not empty — don't risk doubling
+    // Select everything currently in the box, then insert. execCommand('insertText')
+    // REPLACES the selection (so the box ends up with exactly one copy) AND fires the
+    // input events Facebook's Lexical editor needs.
+    //
+    // IMPORTANT: do NOT dispatch a synthetic InputEvent afterwards. Lexical processes
+    // that second 'input' (data: text, inputType: insertText) and inserts the reply a
+    // SECOND time — the cause of "text text" appearing inside one message bubble.
+    try { document.execCommand('selectAll', false, null); } catch (_) {}
     document.execCommand('insertText', false, text);
-    box.dispatchEvent(new InputEvent('input', { bubbles: true, data: text, inputType: 'insertText' }));
     return true;
   }
 
