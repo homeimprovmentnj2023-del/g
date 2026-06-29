@@ -154,24 +154,26 @@ app.post('/api/templates/from-ai', async (req, res) => {
 // title/price/description/photo combo to reduce duplicate/spam flagging.
 function titleCase(s) { return String(s).replace(/\w\S*/g, w => w[0].toUpperCase() + w.slice(1).toLowerCase()); }
 
+// Neutral, policy-conscious modifiers/closers — no service-ad, hype, urgency, or
+// contact cues. Every result also passes through ai.policySanitize as a safety net.
 function genTitle(bases, words) {
   const base = titleCase(bases[Math.floor(Math.random() * bases.length)].trim());
-  const defaults = ['Same Day', 'Like New', 'Best Quality', 'Shiny White', 'Professional', 'Affordable', 'Free Quote', 'Fast Service'];
+  const defaults = ['Like New', 'Quality Finish', 'Professional', 'White Finish', 'Durable', 'Refinished', 'Restored', 'Clean'];
   const pool = [...new Set([...words.map(w => titleCase(w.trim())).filter(Boolean), ...defaults])];
-  if (!pool.length || Math.random() < 0.2) return base.slice(0, 80);
+  if (!pool.length || Math.random() < 0.2) return ai.policySanitize(base, { isTitle: true });
   const mod = pool[Math.floor(Math.random() * pool.length)];
   const formats = [`${base} - ${mod}`, `${mod} ${base}`, `${base} | ${mod}`, `${base} ${mod}`];
-  return formats[Math.floor(Math.random() * formats.length)].slice(0, 80);
+  return ai.policySanitize(formats[Math.floor(Math.random() * formats.length)], { isTitle: true });
 }
 
 function genDesc(words) {
-  const w = (words.length ? words : ['like new', 'same day', 'best quality', 'shiny', 'white']).map(x => x.trim()).filter(Boolean);
+  const w = (words.length ? words : ['like new', 'quality finish', 'durable', 'white', 'professional']).map(x => x.trim()).filter(Boolean);
   const shuffled = [...w].sort(() => Math.random() - 0.5);
   const pick = shuffled.slice(0, Math.min(4, Math.max(2, Math.floor(Math.random() * w.length) + 1)));
-  const ctas = ['Message me for a free quote!', 'Call or message today.', 'Book your same-day service now.',
-    'Serious inquiries welcome.', 'DM for details and booking.', 'Limited spots — reserve today.'];
+  const closers = ['Message for more information.', 'Message with any questions.', 'Serious inquiries welcome.',
+    'Details available on request.', 'Message to learn more.'];
   const cap = s => s.charAt(0).toUpperCase() + s.slice(1);
-  return `${cap(pick.join(', '))}. ${ctas[Math.floor(Math.random() * ctas.length)]}`;
+  return ai.policySanitize(`${cap(pick.join(', '))}. ${closers[Math.floor(Math.random() * closers.length)]}`);
 }
 
 app.post('/api/templates/generate', (req, res) => {
