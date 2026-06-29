@@ -245,13 +245,32 @@
     }
 
     botSent.add(norm(text));            // never answer our own reply (name-collision safe)
-    for (let attempt = 1; attempt <= CONFIG.maxSendRetries; attempt++) {
-      setStatus('busy', attempt === 1 ? 'Sending…' : `Sending… (retry ${attempt - 1})`);
-      if (!stage(text)) { await sleep(CONFIG.retryBackoffMs); continue; }
-      await sleep(450);                 // let Facebook swap the "like" thumb for the Send button
-      pressSend(attempt);
+    setStatus('busy', 'Sending…');
+
+    // Type the reply ONCE.
+    if (!stage(text)) { await sleep(CONFIG.retryBackoffMs); if (!stage(text)) return false; }
+    await sleep(450);                   // let Facebook swap the "like" thumb for the Send button
+    const clickedReal = pressSend();    // true = clicked a real Send button
+    await sleep(CONFIG.sendVerifyMs);
+    if (sendLooksConfirmed(text)) return true;
+
+    if (clickedReal) {
+      // A real Send button was clicked. Do NOT re-type — re-typing is what sent the
+      // message twice. Click once more (a no-op if it already sent) and trust it.
+      pressSend();
       await sleep(CONFIG.sendVerifyMs);
-      if (sendLooksConfirmed(text)) return true;  // box cleared / reply visible
+      return true;
+    }
+
+    // No Send button found (Enter fallback) — nothing was sent yet, so re-typing is
+    // safe. Retry a couple of times.
+    for (let attempt = 2; attempt <= CONFIG.maxSendRetries; attempt++) {
+      setStatus('busy', `Sending… (retry ${attempt - 1})`);
+      if (!stage(text)) { await sleep(CONFIG.retryBackoffMs); continue; }
+      await sleep(300);
+      if (pressSend()) { await sleep(CONFIG.sendVerifyMs); if (sendLooksConfirmed(text)) return true; return true; }
+      await sleep(CONFIG.sendVerifyMs);
+      if (sendLooksConfirmed(text)) return true;
       await sleep(CONFIG.retryBackoffMs * attempt);
     }
     return false;
@@ -334,18 +353,19 @@
     } catch (_) {}
   }
 
-  function pressSend(attempt) {
+  // Returns true if it clicked a real Send button (so the caller knows not to
+  // re-type, which would duplicate the message).
+  function pressSend() {
     const box = composeBox();
     if (box) box.focus();
     const btn = findSendButton();
-    if (btn) clickEl(btn);
-    else {
-      // Last resort: Enter (works in some locales even if untrusted).
-      const tgt = (box && document.activeElement && box.contains(document.activeElement)) ? document.activeElement : box;
-      if (tgt) ['keydown', 'keypress', 'keyup'].forEach(t =>
-        tgt.dispatchEvent(new KeyboardEvent(t, { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true })));
-    }
     reportSendDebug(btn);
+    if (btn) { clickEl(btn); return true; }
+    // No Send button (e.g. empty box, or locale variance): fall back to Enter.
+    const tgt = (box && document.activeElement && box.contains(document.activeElement)) ? document.activeElement : box;
+    if (tgt) ['keydown', 'keypress', 'keyup'].forEach(t =>
+      tgt.dispatchEvent(new KeyboardEvent(t, { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true })));
+    return false;
   }
 
   // Heuristic confirmation: after a successful send FB clears the compose box,
