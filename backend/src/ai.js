@@ -79,6 +79,35 @@ Write a natural, neutral, factual description of what is offered. It must be cle
 - Unverifiable, medical, safety, or warranty claims.
 Keep the title a concise, descriptive name of the item/offering (not a sales pitch). Keep the description plain, professional, and truthful.`;
 
+// Curated, policy-safe vocabulary for generating bathtub/tile refinishing
+// listings. Neutral, appearance/quality/benefit focused. The bulk generator and
+// the AI prompts both draw from these.
+const LISTING_KEYWORDS = {
+  primary: [
+    'Bathtub Resurfacing', 'Bathtub Restoration', 'Bathtub Renewal', 'Tub Resurfacing',
+    'Tub Restoration', 'Bathroom Refresh', 'Surface Restoration', 'Shower Refinishing',
+    'Shower Surround', 'Tile Refinishing', 'Tile Restoration', 'Fiberglass Tub',
+    'Acrylic Bathtub', 'Cast Iron Bathtub', 'Porcelain Refinishing',
+  ],
+  appearance: [
+    'Bright White', 'Fresh White', 'Clean Finish', 'Smooth Finish', 'Gloss Finish',
+    'Satin Finish', 'Like-New Appearance', 'Updated Look', 'Refreshed Appearance',
+    'Uniform Color', 'Clean Lines', 'Neutral Finish', 'Classic White', 'Fresh Surface',
+  ],
+  quality: [
+    'Professional Finish', 'Quality Workmanship', 'Attention to Detail',
+    'Clean and Polished Finish', 'Durable Finish', 'Long-Lasting Appearance',
+  ],
+  themes: [
+    'Bathroom Refresh', 'Bathroom Improvement', 'Home Improvement', 'Guest Bathroom Update',
+    'Master Bathroom Refresh', 'Condo Improvement', 'Apartment Renovation', 'Property Update',
+  ],
+  benefits: [
+    'Restore the appearance', 'Refresh worn surfaces', 'Renew existing surfaces',
+    "Improve the bathroom's appearance", 'Update without full replacement',
+  ],
+};
+
 // Phrase-level rewrites applied to EVERY generated title/description before it is
 // saved (rule-based, so it works even with no API key).
 const RISKY_REPLACEMENTS = [
@@ -165,6 +194,13 @@ async function composeListing({ title = '', notes = '', category = '', competito
   const prompt = `You are an expert Facebook Marketplace seller. Create a complete listing that is accurate and effective but, above all, COMPLIANT with Facebook Marketplace Commerce Policies.
 
 ${POLICY_GUIDANCE}
+
+PREFERRED VOCABULARY (use naturally where they fit the item — do NOT keyword-stuff):
+- Primary terms: ${LISTING_KEYWORDS.primary.join(', ')}
+- Appearance: ${LISTING_KEYWORDS.appearance.join(', ')}
+- Quality: ${LISTING_KEYWORDS.quality.join(', ')}
+- Home-improvement themes: ${LISTING_KEYWORDS.themes.join(', ')}
+- Benefits: ${LISTING_KEYWORDS.benefits.join('; ')}
 
 ITEM / OFFERING: "${seed}"
 SELLER NOTES: ${notes || '(none)'}
@@ -269,4 +305,4 @@ Respond ONLY as JSON: {"title":"...","description":"..."}`;
   }
 }
 
-module.exports = { suggest, composeListing, varyListing, policySanitize, FB_CATEGORIES };
+module.exports = { suggest, composeListing, varyListing, policySanitize, LISTING_KEYWORDS, FB_CATEGORIES };

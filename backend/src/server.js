@@ -154,32 +154,47 @@ app.post('/api/templates/from-ai', async (req, res) => {
 // title/price/description/photo combo to reduce duplicate/spam flagging.
 function titleCase(s) { return String(s).replace(/\w\S*/g, w => w[0].toUpperCase() + w.slice(1).toLowerCase()); }
 
-// Neutral, policy-conscious modifiers/closers — no service-ad, hype, urgency, or
-// contact cues. Every result also passes through ai.policySanitize as a safety net.
+// Draw varied, on-theme, policy-safe titles/descriptions from the curated keyword
+// library (ai.LISTING_KEYWORDS), blended with anything the user typed. Every result
+// also passes through ai.policySanitize as a safety net.
+function pickN(arr, n) { return [...arr].sort(() => Math.random() - 0.5).slice(0, n); }
+
 function genTitle(bases, words) {
-  const base = titleCase(bases[Math.floor(Math.random() * bases.length)].trim());
-  const defaults = ['Like New', 'Quality Finish', 'Professional', 'White Finish', 'Durable', 'Refinished', 'Restored', 'Clean'];
-  const pool = [...new Set([...words.map(w => titleCase(w.trim())).filter(Boolean), ...defaults])];
-  if (!pool.length || Math.random() < 0.2) return ai.policySanitize(base, { isTitle: true });
-  const mod = pool[Math.floor(Math.random() * pool.length)];
+  const K = ai.LISTING_KEYWORDS;
+  // Title subjects = the user's seeds blended with the primary keyword library.
+  const subjects = [...new Set([...bases.map(s => titleCase(String(s).trim())).filter(Boolean), ...K.primary])];
+  const base = subjects[Math.floor(Math.random() * subjects.length)] || 'Bathtub Resurfacing';
+  // Modifiers = appearance + quality + home-improvement themes + any user words.
+  const mods = [...new Set([
+    ...words.map(w => titleCase(String(w).trim())).filter(Boolean),
+    ...K.appearance, ...K.quality, ...K.themes,
+  ])];
+  if (!mods.length || Math.random() < 0.18) return ai.policySanitize(base, { isTitle: true });
+  const mod = mods[Math.floor(Math.random() * mods.length)];
   const formats = [`${base} - ${mod}`, `${mod} ${base}`, `${base} | ${mod}`, `${base} ${mod}`];
   return ai.policySanitize(formats[Math.floor(Math.random() * formats.length)], { isTitle: true });
 }
 
 function genDesc(words) {
-  const w = (words.length ? words : ['like new', 'quality finish', 'durable', 'white', 'professional']).map(x => x.trim()).filter(Boolean);
-  const shuffled = [...w].sort(() => Math.random() - 0.5);
-  const pick = shuffled.slice(0, Math.min(4, Math.max(2, Math.floor(Math.random() * w.length) + 1)));
+  const K = ai.LISTING_KEYWORDS;
+  const cap = s => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
+  const appearance = pickN(K.appearance, 2).map(s => s.toLowerCase());
+  const userWords = words.map(x => String(x).trim()).filter(Boolean);
+  const lead = [...appearance, ...pickN(userWords, 1)].filter(Boolean).join(', ');
+  const benefit = pickN(K.benefits, 1)[0];
+  const quality = pickN(K.quality, 1)[0];
+  const theme = Math.random() < 0.5 ? ` A simple ${pickN(K.themes, 1)[0].toLowerCase()}.` : '';
   const closers = ['Message for more information.', 'Message with any questions.', 'Serious inquiries welcome.',
     'Details available on request.', 'Message to learn more.'];
-  const cap = s => s.charAt(0).toUpperCase() + s.slice(1);
-  return ai.policySanitize(`${cap(pick.join(', '))}. ${closers[Math.floor(Math.random() * closers.length)]}`);
+  const closer = closers[Math.floor(Math.random() * closers.length)];
+  return ai.policySanitize(`${cap(lead)}. ${cap(benefit)}.${theme} ${quality}. ${closer}`);
 }
 
 app.post('/api/templates/generate', (req, res) => {
   const { titles = [], prices = [], descWords = [], photos = [], location = '', locations = [], category = 'Home Improvement', count = 10 } = req.body || {};
-  const bases = titles.map(t => String(t).trim()).filter(Boolean);
-  if (!bases.length) return res.status(400).json({ error: 'Provide at least one title seed' });
+  // Title seeds the user typed; if none, generate straight from the keyword library.
+  let bases = titles.map(t => String(t).trim()).filter(Boolean);
+  if (!bases.length) bases = ai.LISTING_KEYWORDS.primary.slice();
   const priceList = (prices.length ? prices : ['99']).map(p => String(p).replace(/[^0-9.]/g, '')).filter(Boolean);
   const photoList = Array.isArray(photos) ? photos : [];
   // ZIP/locations to rotate through (one template per area, cycling).
