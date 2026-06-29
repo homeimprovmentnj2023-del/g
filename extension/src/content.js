@@ -313,8 +313,13 @@ async function saveNewTemplate(sidebar) {
 // ── Listings ──────────────────────────────────────────────────────────────────
 
 async function scanAndReportListings(sidebar) {
-  const listings = window.FBMScraper.scrapeListingCards();
   const list = sidebar.querySelector('#fbm-listing-list');
+  // Only the user's OWN listings are tracked — scan from the "Your Listings" page.
+  if (!window.FBMScraper.isYourListingsPage()) {
+    list.innerHTML = '<p class="fbm-dim">Open your <b>Your Listings</b> page (Marketplace → You → Your listings), then scan there so only YOUR listings are tracked.</p>';
+    return;
+  }
+  const listings = window.FBMScraper.scrapeListingCards().filter(l => l.owned);
   if (!listings.length) {
     list.innerHTML = '<p class="fbm-dim">No listings found on this page.</p>';
     return;
@@ -363,6 +368,7 @@ async function scanAndReportCompetitors(sidebar) {
 async function reportPageToBackend() {
   const listing = window.FBMScraper.scrapeCurrentListing();
   if (!listing) return;
+  if (!listing.owned) return;   // only track the user's OWN listings, never others'
   await api('/api/listings', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

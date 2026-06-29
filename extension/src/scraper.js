@@ -6,9 +6,40 @@ window.FBMScraper = {
     return m ? m[1] : null;
   },
 
-  // Scrapes all visible listing cards on the "Your listings" or browse page.
+  // True when we're on the user's own "Your Listings" page.
+  isYourListingsPage() {
+    return /\/marketplace\/you(\/|$)/.test(location.pathname);
+  },
+
+  // True when the current listing detail page is one the user OWNS — detected by
+  // owner-only controls. Conservative: defaults to false so other people's
+  // listings are never tracked as "yours".
+  isOwnListing() {
+    if (this.isYourListingsPage()) return true;
+    const labels = ['mark as sold', 'mark as available', 'mark as pending', 'edit listing',
+      'boost listing', 'manage listing', 'delete listing', 'listing insights'];
+    const nodes = document.querySelectorAll('[aria-label], div[role="button"]');
+    for (const el of nodes) {
+      const t = ((el.getAttribute && el.getAttribute('aria-label')) || el.textContent || '').trim().toLowerCase();
+      if (t && t.length < 40 && labels.some(l => t === l || t.includes(l))) return true;
+    }
+    return false;
+  },
+
+  // Read a status from a "Your Listings" card (Pending / Sold / etc.).
+  cardStatus(container) {
+    const txt = ((container && container.textContent) || '').toLowerCase();
+    if (/\bsold\b/.test(txt)) return 'removed';
+    if (/\bpending\b/.test(txt)) return 'pending';
+    if (/\bexpired\b/.test(txt)) return 'expired';
+    if (/needs? attention|action required/.test(txt)) return 'requires_attention';
+    return 'active';
+  },
+
+  // Scrapes visible listing cards. Tags them as OWNED only on the Your Listings page.
   scrapeListingCards() {
     const S = window.FBM_SELECTORS;
+    const owned = this.isYourListingsPage();
     const cards = [];
     document.querySelectorAll('a[href*="/marketplace/item/"]').forEach(link => {
       const id = this.extractId(link.href);
@@ -17,7 +48,7 @@ window.FBMScraper = {
       const title = container?.querySelector(S.listingTitle)?.textContent?.trim() || '';
       const price = container?.querySelector(S.listingPrice)?.textContent?.trim() || '';
       if (id && (title || price)) {
-        cards.push({ id, title, price, url: link.href });
+        cards.push({ id, title, price, url: link.href, owned, status: owned ? this.cardStatus(container) : undefined });
       }
     });
     // Deduplicate by id
@@ -36,7 +67,7 @@ window.FBMScraper = {
     const status = document.querySelector(S.listingDetailStatus)?.textContent?.trim() || 'active';
     const description = document.querySelector('div[data-ad-preview="message"]')?.textContent?.trim() || '';
 
-    return { id, title, price, status, description, url: location.href, scrapedAt: Date.now() };
+    return { id, title, price, status, description, url: location.href, owned: this.isOwnListing(), scrapedAt: Date.now() };
   },
 
   // Scrapes competitor browse results. Call while on a marketplace browse/search page.

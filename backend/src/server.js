@@ -234,7 +234,15 @@ app.delete('/api/templates/:id', (req, res) => {
 
 // ── Listings ──────────────────────────────────────────────────────────────────
 
-app.get('/api/listings', (_req, res) => res.json(db.getListings()));
+app.get('/api/listings', (req, res) => {
+  let listings = db.getListings();
+  // owned=1 → only the user's own listings (scanned from "Your Listings" or
+  // published from one of their templates). Keeps other people's listings out.
+  if (req.query.owned === '1' || req.query.owned === 'true') {
+    listings = listings.filter(l => l.owned === true || l.template_id != null);
+  }
+  res.json(listings);
+});
 
 app.post('/api/listings', (req, res) => {
   const l = req.body;
@@ -243,6 +251,7 @@ app.post('/api/listings', (req, res) => {
     id: l.id, title: l.title || '', price: l.price || '', description: l.description || '',
     status: l.status || 'active', url: l.url || '',
     template_id: l.template_id != null ? l.template_id : null, // remember source template for auto-repost
+    owned: l.owned === true,
   });
   res.json({ ok: true });
 });
@@ -251,10 +260,18 @@ app.post('/api/listings', (req, res) => {
 app.post('/api/listings/bulk', (req, res) => {
   const listings = (req.body || []).map(l => ({
     id: l.id, title: l.title || '', price: l.price || '',
-    description: l.description || '', status: 'active', url: l.url || '',
+    description: l.description || '', status: l.status || 'active', url: l.url || '',
+    owned: l.owned === true,
   }));
   db.upsertListings(listings);
   res.json({ ok: true, count: listings.length });
+});
+
+// Delete one of the user's own listings from the dashboard (keeps its template +
+// photos so it can be republished later).
+app.delete('/api/listings/:id', (req, res) => {
+  db.deleteListing(req.params.id);
+  res.json({ ok: true });
 });
 
 // Listings that haven't been checked in an hour — background script uses this

@@ -99,7 +99,11 @@
     <section>
       <div class="toolbar">
         <h2>My Listings</h2>
+        <button class="btn btn-sm" id="btn-refresh-listings" style="margin-left:auto">↻ Refresh</button>
       </div>
+      <p style="color:var(--dim);font-size:12px;margin-bottom:12px">
+        Shows <b>only your own</b> Marketplace listings (scanned from your “Your Listings” page, or published from your templates). Inactive ones are highlighted; their template &amp; details stay saved so you can republish or delete them.
+      </p>
       <div id="listings-table"></div>
     </section>
   </div>
@@ -570,30 +574,74 @@ async function loadOverview() {
 // ── Listings ──────────────────────────────────────────────────────────────────
 
 async function loadListings() {
-  const listings = await get('/api/listings');
+  // owned=1 → only YOUR listings (scanned from "Your Listings" or published from
+  // your templates). Other people's listings are never shown here.
+  const listings = await get('/api/listings?owned=1');
   document.getElementById('listings-table').innerHTML = renderListingsTable(listings);
 }
 
+// Normalize any raw status into one of the 5 display states.
+function statusInfo(raw) {
+  const s = String(raw || '').toLowerCase();
+  if (s === 'active' || s === 'listed' || s === 'available') return { label: 'Active',  color: '#1b5e20', bg: '#e6f4ea', active: true };
+  if (s === 'pending')                                        return { label: 'Pending', color: '#8a5a00', bg: '#fff8e1' };
+  if (s === 'expired')                                        return { label: 'Expired', color: '#5f6368', bg: '#eceff1' };
+  if (s === 'removed' || s === 'sold' || s === 'deleted')     return { label: 'Removed', color: '#b3261e', bg: '#fce8e6' };
+  return { label: 'Requires Attention', color: '#b45309', bg: '#fff4e5' }; // inactive/unknown
+}
+
 function renderListingsTable(listings) {
-  if (!listings.length) return '<p class="empty">No listings yet. Use the extension to scan your Marketplace listings.</p>';
-  return `<table>
+  if (!listings.length) return `<p class="empty">No listings of yours yet.<br>In the extension, open <b>Marketplace → You → Your listings</b> and click <b>Scan listings</b> — only your own listings are tracked here.</p>`;
+
+  // Small status summary
+  const counts = {};
+  listings.forEach(l => { const k = statusInfo(l.status).label; counts[k] = (counts[k] || 0) + 1; });
+  const summary = Object.entries(counts).map(([k, v]) => { const c = statusInfo(k === 'Active' ? 'active' : k === 'Pending' ? 'pending' : k === 'Expired' ? 'expired' : k === 'Removed' ? 'removed' : 'x'); return `<span style="background:${c.bg};color:${c.color};padding:2px 8px;border-radius:10px;font-size:11px;margin-right:6px">${k}: ${v}</span>`; }).join('');
+
+  return `<div style="margin-bottom:10px">${summary}</div>
+  <table>
     <thead><tr><th>Title</th><th>Price</th><th>Status</th><th>Last Seen</th><th>Link</th><th>Actions</th></tr></thead>
-    <tbody>${listings.map(l => `
-      <tr>
-        <td>${esc(l.title)}</td>
+    <tbody>${listings.map(l => {
+      const si = statusInfo(l.status);
+      const rowBg = si.active ? '' : `style="background:${si.bg}"`;
+      return `<tr ${rowBg}>
+        <td>${esc(l.title)}${si.active ? '' : ' <span title="No longer active" style="color:' + si.color + '">⚠️</span>'}</td>
         <td>${esc(l.price)}</td>
-        <td><span class="badge badge-${l.status === 'active' ? 'active' : l.status === 'inactive' ? 'inactive' : 'unknown'}">${esc(l.status)}</span></td>
+        <td><span style="background:${si.bg};color:${si.color};font-weight:600;padding:3px 9px;border-radius:10px;font-size:11px;white-space:nowrap">${si.label}</span></td>
         <td>${relTime(l.last_seen)}</td>
         <td>${l.url ? `<a href="${esc(l.url)}" target="_blank" style="color:var(--blue)">View ↗</a>` : '—'}</td>
         <td style="white-space:nowrap">
           ${l.template_id
-            ? `<button class="btn btn-sm" style="color:#1877f2;border-color:#1877f2" onclick="repostListing('${esc(String(l.id))}')">🔁 Repost Now</button>`
-            : '<span style="color:var(--dim);font-size:11px">no template</span>'}
+            ? `<button class="btn btn-sm" style="color:#2e7d32;border-color:#2e7d32" onclick="repostListing('${esc(String(l.id))}')">♻️ Republish</button>`
+            : `<button class="btn btn-sm" style="color:#6b3fb0;border-color:#6b3fb0" onclick="saveListingAsTemplate('${esc(String(l.id))}')">💾 Save as Template</button>`}
+          ${si.active ? '' : `<button class="btn btn-sm btn-danger" style="margin-left:4px" onclick="deleteListing('${esc(String(l.id))}')">🗑 Delete</button>`}
         </td>
-      </tr>`).join('')}
+      </tr>`;
+    }).join('')}
     </tbody>
   </table>`;
 }
+
+async function deleteListing(id) {
+  if (!confirm('Remove this listing from your dashboard?\n\nIts template, photos, title, description, price, category and location stay saved so you can republish later. (This does not delete anything on Facebook.)')) return;
+  await del('/api/listings/' + encodeURIComponent(id));
+  showToast('Listing removed from dashboard. Template kept for republishing.');
+  loadListings();
+}
+
+async function saveListingAsTemplate(id) {
+  const l = await get('/api/listings/' + encodeURIComponent(id));
+  if (!l || l.error) { showToast('Could not load listing'); return; }
+  const res = await post('/api/templates/from-listing', {
+    title: l.title, price: l.price, description: l.description, photoUrls: [],
+  });
+  if (res.error) { showToast('Error: ' + res.error); return; }
+  showToast('Saved as a template — open Templates to add photos/category, then republish.');
+  document.querySelector('[data-panel="templates"]').click();
+  loadTemplates();
+}
+
+document.getElementById('btn-refresh-listings').onclick = () => { showToast('Refreshing…'); loadListings(); };
 
 async function repostListing(id) {
   if (!confirm('Queue a fresh post of this listing from its template now?')) return;

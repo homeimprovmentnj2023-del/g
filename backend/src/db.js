@@ -92,17 +92,25 @@ module.exports = {
       existing.title     = l.title;
       existing.price     = l.price;
       existing.status    = l.status || existing.status;
+      if (l.description) existing.description = l.description; // keep details for republish
       if (l.template_id != null) existing.template_id = l.template_id; // keep source template
+      if (l.owned != null) existing.owned = !!l.owned;        // only your own listings
       existing.last_seen = now();
     } else {
       data.listings.push({
         id: l.id, title: l.title || '', price: l.price || '',
         description: l.description || '', status: l.status || 'active',
         url: l.url || '', area: l.area || null, template_id: l.template_id || null,
+        owned: l.owned === true,
         first_seen: now(), last_seen: now(), last_checked: now(),
       });
     }
     save();
+  },
+  deleteListing: (id) => {
+    data.listings = data.listings.filter(l => l.id !== id);
+    data.listing_events = data.listing_events.filter(e => e.listing_id !== id);
+    saveNow();
   },
   upsertListings(listings) { listings.forEach(l => this.upsertListing(l)); saveNow(); },
   getListings: () => [...data.listings].sort((a, b) => b.last_seen - a.last_seen),
