@@ -70,5 +70,11 @@ window.FBM_SELECTORS = {
     // The reply input (contenteditable) and the send button.
     composeBox:     'div[contenteditable="true"][role="textbox"], div[aria-label*="Message"][contenteditable="true"]',
     sendButton:     'div[aria-label="Press enter to send"], div[aria-label="Send"][role="button"]',
+    // ── Inbox conversation list (used to move to the next unread conversation
+    //    after replying). conversationRow = each conversation entry in the left
+    //    list; unreadHint = an optional explicit "unread" marker. Leave both null
+    //    to use the built-in defaults (left-pane rows + bold-preview detection).
+    conversationRow: null,
+    unreadHint:      null,
   },
 };

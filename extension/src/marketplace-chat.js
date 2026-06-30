@@ -160,10 +160,12 @@
       const key = msgs.map(m => m.raw).join('|').slice(0, 800);
       if (key === _diagKey && Date.now() - _diagAt < 8000) return;
       _diagKey = key; _diagAt = Date.now();
+      let inbox = null;
+      try { const rs = conversationRows(); inbox = { rows: rs.length, unread: rs.filter(rowIsUnread).length }; } catch (_) {}
       fetch(`${BACKEND}/api/debug`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          kind: 'mp-bridge-diag', url: location.href, conversation: info,
+          kind: 'mp-bridge-diag', url: location.href, conversation: info, inbox,
           messages: msgs.slice(-8).map(m => ({ sender: m.sender, text: m.text.slice(0, 80), bot: m.bot, raw: m.raw })),
           ...(extra || {}),
         }),
@@ -171,24 +173,25 @@
     } catch (_) {}
   }
 
-  // ── Bridge core ───────────────────────────────────────────────────────────
-  async function check() {
-    reportDiag();
+  // ── Reply to the currently OPEN conversation. Returns true if it just replied,
+  //    false if there's nothing to do here (so the caller can move to the next).
+  const handledAt = new Map();           // conversation key -> last time we acted on it
+  async function handleOpenConversation() {
     // Marketplace-only lock: only act inside a real open Marketplace conversation
     // (the compose box reads "Write to <Buyer · Listing>"). Ignores everything else.
-    if (!conversationInfo().title) return;
+    if (!conversationInfo().title) return false;
 
     const inbound = latestInbound();
-    if (!inbound) return;
+    if (!inbound) return false;                // buyer has no new message here → idle
 
     const tid = threadId();
     const key = `${tid}::${inbound.text}`;
-    if (seen.has(key)) return;                 // de-dupe (don't forward twice)
+    if (seen.has(key)) return false;           // already handled this message
     seen.add(key);
 
-    // On the very first scan, only react to messages that arrived after boot so
-    // we don't reply to the whole back-history when the inbox first loads.
-    if (Date.now() - booted < CONFIG.freshnessMs && seen.size > 3) return;
+    // On the very first scan after opening a thread, only react to messages that
+    // arrived after boot so we don't reply to the whole back-history.
+    if (Date.now() - booted < CONFIG.freshnessMs && seen.size > 3) return false;
 
     // Conversation memory: send the recent thread (read from the DOM) so the bot
     // has context — Marketplace chats aren't stored in the bot's database.
@@ -224,26 +227,82 @@
         console.warn('[FBM bridge] backend error', res.status, data);
         setStatus('err', `Backend ${res.status} — see dashboard Logs`);
         seen.delete(key);                       // allow a retry on the next tick
-        return;
+        return false;
       }
       reply = data && (data.reply || data.text || data.message);
     } catch (err) {
       console.warn('[FBM bridge] cannot reach backend — keep start.bat running.', err.message);
       setStatus('err', 'Backend offline — run start.bat');
       seen.delete(key);
-      return;
+      return false;
     }
 
-    if (!reply) { setStatus('err', 'Empty reply from chatbot'); return; }
+    if (!reply) { setStatus('err', 'Empty reply from chatbot'); return false; }
 
     const ok = await deliverReply(String(reply));
     if (ok) {
       sentCount++;
+      handledAt.set((conversationInfo().title || tid).toLowerCase(), Date.now());
       setStatus('ok', `Sent ✓ ${sentCount} · ${new Date().toLocaleTimeString()}`);
-    } else {
-      setStatus('err', 'Send failed — check selectors.chat');
-      seen.delete(key);                          // let it try again next tick
+      return true;
     }
+    setStatus('err', 'Send failed — check selectors.chat');
+    seen.delete(key);                            // let it try again next tick
+    return false;
+  }
+
+  // ── Inbox orchestration ────────────────────────────────────────────────────
+  // After finishing the open chat (or when it's idle), open the NEXT unread
+  // conversation in the list so we keep monitoring ALL conversations, not one.
+  function conversationRows() {
+    const sel = SEL.conversationRow || 'a[href*="/t/"], [aria-label^="Conversation titled"], div[role="row"]';
+    const half = Math.max(360, window.innerWidth * 0.45);
+    return $$(sel).filter(el => {
+      if (!visible(el)) return false;
+      const r = el.getBoundingClientRect();
+      return r.left < half && r.width > 120 && r.height > 24;   // left-pane conversation rows
+    });
+  }
+
+  function rowIsUnread(row) {
+    if (SEL.unreadHint) { try { if (row.matches(SEL.unreadHint) || row.querySelector(SEL.unreadHint)) return true; } catch (_) {} }
+    if (/\bunread\b/i.test(row.getAttribute('aria-label') || '')) return true;
+    // Facebook renders an unread conversation's name/preview in bold.
+    let bold = false;
+    row.querySelectorAll('span, div').forEach(s => {
+      if (bold) return;
+      const t = (s.textContent || '').trim();
+      if (t.length > 1 && parseInt(getComputedStyle(s).fontWeight, 10) >= 600) bold = true;
+    });
+    return bold;
+  }
+
+  function openNextUnread() {
+    const openTitle = (conversationInfo().title || '').toLowerCase();
+    for (const r of conversationRows()) {
+      if (!rowIsUnread(r)) continue;
+      const label = (r.getAttribute('aria-label') || r.textContent || '').trim().toLowerCase();
+      if (openTitle && label.includes(openTitle.slice(0, 12))) continue;   // already open
+      const last = handledAt.get(label);
+      if (last && Date.now() - last < 12000) continue;                     // just touched it
+      setStatus('busy', 'Opening next unread chat…');
+      handledAt.set(label, Date.now());
+      clickEl(r);                                  // open it; next tick will reply
+      return true;
+    }
+    return false;
+  }
+
+  // ── One tick: handle the open conversation, otherwise advance to the next. ───
+  let ticking = false;
+  async function check() {
+    if (ticking) return; ticking = true;
+    try {
+      reportDiag();
+      const replied = await handleOpenConversation();
+      if (!replied) openNextUnread();              // nothing to do here → next conversation
+    } catch (e) { console.warn('[FBM bridge]', e); }
+    finally { ticking = false; }
   }
 
   // Type the reply into the compose box and (if autoSend) send it, verifying it
