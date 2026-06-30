@@ -385,11 +385,12 @@ app.post('/api/marketplace/incoming', async (req, res) => {
     return res.status(503).json({ error: 'N8N_WEBHOOK_URL not set in backend/.env — see docs/n8n-marketplace-adapter.md' });
   }
 
-  const { source = 'marketplace', sender_id, thread_id, sender_name, text, timestamp, history } = req.body || {};
+  const { source = 'marketplace', account_id, sender_id, thread_id, sender_name, text, timestamp, history } = req.body || {};
   if (!text || !String(text).trim()) return res.status(400).json({ error: 'text required' });
 
   const payload = {
-    source, sender_id, thread_id, sender_name,
+    source, account_id: account_id != null ? account_id : null, // which FB account (multi-account)
+    sender_id, thread_id, sender_name,
     text: String(text), timestamp: timestamp || new Date().toISOString(),
     history: Array.isArray(history) ? history : [],   // recent thread for context/memory
   };
@@ -411,7 +412,7 @@ app.post('/api/marketplace/incoming', async (req, res) => {
     // bare string — accept either.
     let reply = raw;
     try { const j = JSON.parse(raw); reply = j.reply ?? j.text ?? j.message ?? j.output ?? raw; } catch (_) {}
-    db.addLog({ step: 'marketplace-bridge', status: 'info', detail: `Thread ${thread_id || '?'}: relayed inbound, got ${String(reply).length} char reply` });
+    db.addLog({ step: 'marketplace-bridge', status: 'info', detail: `Acct ${account_id || '-'} · Thread ${thread_id || '?'}: relayed inbound, got ${String(reply).length} char reply` });
     res.json({ reply: String(reply) });
   } catch (err) {
     const msg = err.name === 'AbortError' ? 'n8n timed out (30s)' : err.message;

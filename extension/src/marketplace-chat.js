@@ -46,9 +46,15 @@
   let booted = Date.now();
   let timer = null;
   let sentCount = 0;
+  let currentAccountId = '';          // which Facebook account THIS Chrome profile is
 
-  chrome.storage?.local?.get?.(['mpAutoSend'], v => {
+  chrome.storage?.local?.get?.(['mpAutoSend', 'fbmAccountId'], v => {
     if (typeof v?.mpAutoSend === 'boolean') CONFIG.autoSend = v.mpAutoSend;
+    if (v?.fbmAccountId) currentAccountId = String(v.fbmAccountId);
+  });
+  // Keep the account in sync if it's changed in the popup while the page is open.
+  chrome.storage?.onChanged?.addListener?.((changes, area) => {
+    if (area === 'local' && changes.fbmAccountId) currentAccountId = String(changes.fbmAccountId.newValue || '');
   });
 
   // ── Status badge (so you can confirm it's running unattended) ───────────────
@@ -190,10 +196,15 @@
     const roleOf = m => (m.bot || botSent.has(norm(m.text)) || !(buyer && m.sender.toLowerCase().includes(buyer.toLowerCase()))) ? 'You' : 'Customer';
     const history = scanMessages().slice(-13, -1).map(m => ({ role: roleOf(m), text: m.text }));
 
+    // Namespace the thread id by account so threads from different Facebook
+    // accounts never collide and each account's memory stays separate.
+    const nsTid = currentAccountId ? ('a' + currentAccountId + '_' + tid) : tid;
+
     const payload = {
       source: 'marketplace',
-      sender_id: tid,                          // stable per-thread id
-      thread_id: tid,
+      account_id: currentAccountId || null,    // which FB account received this message
+      sender_id: nsTid,                        // stable per-thread id (account-namespaced)
+      thread_id: nsTid,
       sender_name: contactName(),
       text: inbound.text,
       timestamp: new Date().toISOString(),
