@@ -30,13 +30,16 @@
     // Set chrome.storage key `mpAutoSend` to false if you ever want to switch to
     // review-before-send (the reply is staged in the box but not sent).
     autoSend: true,
-    // Ignore messages older than this on first load so we don't reply to history.
-    freshnessMs: 2 * 60 * 1000,
     debounceMs: 350,
     // Send recovery: how many times to retry a send that didn't go through.
     maxSendRetries: 3,
     retryBackoffMs: 1200,
-    sendVerifyMs: 700,   // wait this long, then confirm the compose box cleared
+    sendVerifyMs: 700,       // wait this long, then confirm the compose box cleared
+    settleMs: 1500,          // let a freshly-opened thread render before acting
+    minActionGapMs: 5000,    // pace replies/opens (anti-spam + human cadence)
+    fetchTimeoutMs: 35000,   // hard timeout so a stalled request can't hang the monitor
+    watchdogMs: 2500,        // master health/scan loop interval
+    staleScanMs: 15000,      // no scan in this long → show "Reconnecting" + self-heal
   };
 
   const SEL = (window.FBM_SELECTORS && window.FBM_SELECTORS.chat) || {};
@@ -47,6 +50,8 @@
   let timer = null;
   let sentCount = 0;
   let currentAccountId = '';          // which Facebook account THIS Chrome profile is
+  // Health / monitoring state — the watchdog uses these to detect a stalled listener.
+  let lastScanAt = 0, lastReplyAt = 0, lastActionAt = 0, lastDetectAt = 0, tickStartedAt = 0;
 
   chrome.storage?.local?.get?.(['mpAutoSend', 'fbmAccountId'], v => {
     if (typeof v?.mpAutoSend === 'boolean') CONFIG.autoSend = v.mpAutoSend;
@@ -187,11 +192,10 @@
     const tid = threadId();
     const key = `${tid}::${inbound.text}`;
     if (seen.has(key)) return false;           // already handled this message
+    // Let a freshly-opened thread settle before acting (avoids a half-loaded DOM).
+    if (Date.now() - booted < CONFIG.settleMs) return false;
     seen.add(key);
-
-    // On the very first scan after opening a thread, only react to messages that
-    // arrived after boot so we don't reply to the whole back-history.
-    if (Date.now() - booted < CONFIG.freshnessMs && seen.size > 3) return false;
+    lastDetectAt = Date.now();                 // a real new buyer message was detected
 
     // Conversation memory: send the recent thread (read from the DOM) so the bot
     // has context — Marketplace chats aren't stored in the bot's database.
@@ -215,12 +219,15 @@
     };
 
     let reply;
+    const ctrl = new AbortController();
+    const ft = setTimeout(() => ctrl.abort(), CONFIG.fetchTimeoutMs);
     try {
       setStatus('busy', 'Asking chatbot…');
       const res = await fetch(`${BACKEND}/api/marketplace/incoming`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
+        signal: ctrl.signal,                    // hard timeout so a stall can't hang the loop
       });
       const data = await res.json().catch(() => null);
       if (!res.ok) {
@@ -231,10 +238,13 @@
       }
       reply = data && (data.reply || data.text || data.message);
     } catch (err) {
-      console.warn('[FBM bridge] cannot reach backend — keep start.bat running.', err.message);
-      setStatus('err', 'Backend offline — run start.bat');
-      seen.delete(key);
+      const timedOut = err && err.name === 'AbortError';
+      console.warn('[FBM bridge] backend request failed:', err && err.message);
+      setStatus('err', timedOut ? 'Backend slow/timeout — will retry' : 'Backend offline — run start.bat');
+      seen.delete(key);                         // allow a retry on the next tick
       return false;
+    } finally {
+      clearTimeout(ft);
     }
 
     if (!reply) { setStatus('err', 'Empty reply from chatbot'); return false; }
@@ -294,15 +304,21 @@
   }
 
   // ── One tick: handle the open conversation, otherwise advance to the next. ───
+  // Re-entrancy guarded; records health timestamps; paces actions to avoid bursts.
   let ticking = false;
   async function check() {
-    if (ticking) return; ticking = true;
+    if (ticking) return;
+    ticking = true; tickStartedAt = Date.now();
     try {
+      lastScanAt = Date.now();                       // a scan ran → monitoring is alive
       reportDiag();
+      if (Date.now() - lastActionAt < CONFIG.minActionGapMs) return;   // pace actions
       const replied = await handleOpenConversation();
-      if (!replied) openNextUnread();              // nothing to do here → next conversation
+      if (replied) { lastReplyAt = Date.now(); lastActionAt = Date.now(); }
+      else if (openNextUnread()) { lastActionAt = Date.now(); }
+      pruneMemory();
     } catch (e) { console.warn('[FBM bridge]', e); }
-    finally { ticking = false; }
+    finally { ticking = false; tickStartedAt = 0; }
   }
 
   // Type the reply into the compose box and (if autoSend) send it, verifying it
@@ -447,15 +463,24 @@
 
   const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-  // ── Observe the thread for new messages ─────────────────────────────────────
-  function schedule() {
-    clearTimeout(timer);
-    timer = setTimeout(() => check().catch(e => console.warn('[FBM bridge]', e)), CONFIG.debounceMs);
-  }
-
-  // ── Activate / deactivate as the SPA navigates ─────────────────────────────
+  // ── Monitoring lifecycle + self-healing watchdog ────────────────────────────
   let active = false;
   let observer = null;
+  let lastPath = location.pathname;
+
+  function schedule() {
+    clearTimeout(timer);
+    timer = setTimeout(() => check(), CONFIG.debounceMs);
+  }
+
+  function attachObserver() {
+    try { observer && observer.disconnect(); } catch (_) {}
+    // Observe document.body (which is NEVER replaced) with subtree:true, so the
+    // listener can't go stale when Facebook swaps out the conversation panel —
+    // the #1 cause of "stops detecting until refresh".
+    observer = new MutationObserver(schedule);
+    observer.observe(document.body, { childList: true, subtree: true });
+  }
 
   function activate() {
     if (active) return;
@@ -463,37 +488,69 @@
     booted = Date.now();
     seen.clear();
     mountBadge();
-    setStatus('idle', CONFIG.autoSend ? 'Bridge active · auto-reply on' : 'Bridge active · review mode');
-    const target = $(SEL.messageList) || document.body;
-    observer = new MutationObserver(schedule);
-    observer.observe(target, { childList: true, subtree: true });
+    attachObserver();
     schedule();
-    console.info('[FBM bridge] active on', location.pathname, '(autoSend:', CONFIG.autoSend, ')');
+    console.info('[FBM bridge] active on', location.pathname);
   }
 
   function deactivate() {
     if (!active) return;
     active = false;
     clearTimeout(timer);
-    observer?.disconnect();
+    try { observer && observer.disconnect(); } catch (_) {}
     observer = null;
     unmountBadge();
   }
 
-  // Watch for SPA path changes (Facebook doesn't reload when you open a chat).
-  let lastPath = location.pathname;
-  setInterval(() => {
-    if (location.pathname !== lastPath) {
-      lastPath = location.pathname;
-      if (onChatPage()) { deactivate(); activate(); } else { deactivate(); }
-    } else if (onChatPage() && !active) {
-      activate();           // first time the inbox DOM becomes available
-    }
-  }, 1000);
+  // Cap the de-dupe sets so they can't grow unbounded over many hours/conversations.
+  function pruneMemory() {
+    const cap = (set, n) => { if (set.size > n) { const keep = [...set].slice(-Math.floor(n / 2)); set.clear(); keep.forEach(x => set.add(x)); } };
+    cap(seen, 600); cap(botSent, 400);
+    if (handledAt.size > 300) { const e = [...handledAt.entries()].sort((a, b) => a[1] - b[1]).slice(-150); handledAt.clear(); e.forEach(([k, v]) => handledAt.set(k, v)); }
+  }
 
-  // Steady heartbeat re-scan so a new buyer message is picked up fast even if the
-  // MutationObserver misses FB's virtualized DOM updates.
-  setInterval(() => { if (active) schedule(); }, 2000);
+  function timeAgo(t) {
+    const s = Math.round((Date.now() - t) / 1000);
+    if (s < 60) return s + 's ago';
+    const m = Math.round(s / 60); if (m < 60) return m + 'm ago';
+    return Math.round(m / 60) + 'h ago';
+  }
+
+  // The badge reflects the REAL monitoring state, not just the last action — so a
+  // stalled listener shows "Reconnecting…", never a false-healthy green.
+  function updateBadgeHealth() {
+    if (!onChatPage()) { setStatus('idle', 'Open your Marketplace inbox'); return; }
+    if (ticking) {                                  // a tick is working → let it own the badge,
+      if (tickStartedAt && Date.now() - tickStartedAt > 8000) setStatus('busy', 'Working… (slow)');
+      return;                                       // unless it has clearly stalled
+    }
+    if (Date.now() - lastScanAt > CONFIG.staleScanMs) { setStatus('err', 'Reconnecting…'); return; }
+    const tail = lastReplyAt ? ` · last reply ${timeAgo(lastReplyAt)}` : '';
+    setStatus('ok', `Monitoring ✓ · ${sentCount} sent${tail}`);
+  }
+
+  // Master watchdog: ALWAYS runs (independent of `active`), so monitoring recovers
+  // on its own — no page refresh needed. Handles SPA navigation, re-activates if
+  // needed, re-attaches a dead observer, frees a stuck tick, drives a guaranteed
+  // scan every cycle (polling floor), and keeps the badge honest.
+  setInterval(() => {
+    try {
+      if (location.pathname !== lastPath) { lastPath = location.pathname; deactivate(); }
+      if (onChatPage() && !active) activate();
+      if (!onChatPage()) { if (active) deactivate(); updateBadgeHealth(); return; }
+
+      // Self-heal: a tick stuck (e.g. a request that never settled) — free it.
+      if (ticking && tickStartedAt && Date.now() - tickStartedAt > 60000) { ticking = false; tickStartedAt = 0; }
+      // Self-heal: observer missing/disconnected — re-attach it.
+      if (active && !observer) attachObserver();
+      // Self-heal: scans stalled for too long → force a full re-init (no refresh).
+      if (active && lastScanAt && Date.now() - lastScanAt > CONFIG.staleScanMs * 2) { deactivate(); activate(); }
+      // Guaranteed scan every cycle — detection never depends on FB firing mutations.
+      if (active) schedule();
+
+      updateBadgeHealth();
+    } catch (e) { console.warn('[FBM bridge] watchdog', e); }
+  }, CONFIG.watchdogMs);
 
   if (onChatPage()) activate();
 })();
