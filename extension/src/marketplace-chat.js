@@ -583,18 +583,12 @@
     // SECOND time — the cause of "text text" appearing inside one message bubble.
     try { document.execCommand('selectAll', false, null); } catch (_) {}
     document.execCommand('insertText', false, text);
-    // Verify the text actually landed. Some composers ignore execCommand; fall back
-    // to input events ONLY when nothing was inserted (so we never double-insert —
-    // doubling happens only when BOTH execCommand and an InputEvent fire).
-    if (!(box.textContent || '').trim()) {
-      try {
-        box.dispatchEvent(new InputEvent('beforeinput', { inputType: 'insertText', data: text, bubbles: true, cancelable: true }));
-        box.dispatchEvent(new InputEvent('input', { inputType: 'insertText', data: text, bubbles: true }));
-      } catch (_) {}
-    }
-    const ok = (box.textContent || '').trim().length > 0;
-    if (!ok) console.warn('[FBM bridge] text did not land in compose box');
-    return ok;
+    // NOTE: do NOT dispatch a synthetic InputEvent here. execCommand('insertText')
+    // already fires the input events Facebook's Lexical editor needs; an extra
+    // InputEvent makes Lexical insert the text AGAIN (the "same message repeated N
+    // times in one bubble" bug). selectAll above means each stage() REPLACES the
+    // box contents, so retries never accumulate copies either.
+    return true;
   }
 
   // The composer toolbar — the ancestor that holds BOTH the action buttons (emoji,
