@@ -284,22 +284,37 @@
   }
 
   // ── Inbox watcher: enumerate conversation rows in the left list (never the
-  //    open thread's DOM). Broad + de-duped so it survives FB layout variance.
-  function conversationRows() {
-    const sel = SEL.conversationRow || 'a[href*="/t/"], a[href*="/messages/"], [aria-label^="Conversation titled"], div[role="row"], div[role="gridcell"]';
+  //    open thread's DOM). Robust to FB layout variance.
+  function listPaneRight() {
     const box = composeBox();
-    const composerLeft = box ? box.getBoundingClientRect().left : (window.innerWidth * 0.5);
-    const out = [];
-    $$(sel).forEach(el => {
-      if (!visible(el)) return;
+    return box ? box.getBoundingClientRect().left : window.innerWidth;   // composer marks where the list ends
+  }
+  function conversationRows() {
+    if (SEL.conversationRow) return $$(SEL.conversationRow).filter(visible);
+    // 1) Real conversation links (most reliable AND directly clickable).
+    let rows = $$('a[href*="/t/"]').filter(el => visible(el) && /\/t\/\d/.test(el.getAttribute('href') || ''));
+    if (rows.length) return rows;
+    // 2) Fallback: clickable list entries (role=link/button/row) that look like a
+    //    conversation (name + preview) and sit in the left list pane.
+    const right = listPaneRight() - 20;
+    rows = $$('[role="row"],[role="gridcell"],[role="link"],[role="button"]').filter(el => {
+      if (!visible(el)) return false;
       const r = el.getBoundingClientRect();
-      // Conversation rows sit to the LEFT of the composer (the list pane) and are
-      // reasonably tall. This excludes header/message-area elements.
-      if (r.right > composerLeft - 8) return;
-      if (r.width < 120 || r.height < 30 || r.height > 140) return;
-      out.push(el);
+      if (r.left > right) return false;                    // must be in the list pane
+      if (r.width < 130 || r.height < 40 || r.height > 130) return false;
+      return (el.textContent || '').trim().length > 2;
     });
-    return out;
+    // Keep the outermost element per row (drop nested duplicates).
+    return rows.filter((el, i) => !rows.some((o, j) => j !== i && o.contains(el) && o !== el));
+  }
+
+  // Click the real clickable target for a conversation row (row itself may be a
+  // wrapper; the handler is usually on an <a>/role=link/role=button).
+  function clickConversation(row) {
+    const t = row.closest('a[href],[role="link"],[role="button"]')
+      || row.querySelector('a[href],[role="link"],[role="button"]')
+      || row;
+    clickEl(t);
   }
 
   // Is this conversation row unread (has a new customer message)? Several
@@ -330,6 +345,33 @@
     return bold;
   }
 
+  // Compact description of a candidate row (for calibration diagnostics).
+  function rowInfo(r) {
+    const a = r.matches && r.matches('a[href]') ? r : (r.querySelector && r.querySelector('a[href]'));
+    return {
+      tag: (r.tagName || '').toLowerCase(), role: r.getAttribute('role') || '',
+      href: ((a && a.getAttribute('href')) || '').slice(0, 42),
+      aria: (r.getAttribute('aria-label') || '').slice(0, 48),
+      text: (r.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 48),
+      unread: rowIsUnread(r), key: rowKey(r),
+    };
+  }
+  // Raw scan of ALL clickable candidates in the left pane — so I can see the real
+  // inbox DOM even if conversationRows() doesn't match your layout.
+  function rawInboxCandidates() {
+    const right = listPaneRight() - 10;
+    const out = []; const seen = new Set();
+    $$('a[href],[role="row"],[role="link"],[role="button"],[role="gridcell"]').forEach(el => {
+      if (out.length >= 14 || !visible(el)) return;
+      const r = el.getBoundingClientRect();
+      if (r.left > right || r.width < 120 || r.height < 28 || r.height > 160) return;
+      const sig = (el.tagName || '') + (el.getAttribute('role') || '') + Math.round(r.top);
+      if (seen.has(sig)) return; seen.add(sig);
+      out.push(rowInfo(el));
+    });
+    return out;
+  }
+
   // Build the queue of thread keys that currently need a reply (unread rows).
   function refreshQueue() {
     const rows = conversationRows();
@@ -341,7 +383,11 @@
       if (opened && Date.now() - opened < 5000) continue;      // just opened → let FB mark read
       if (!messageQueue.includes(k)) { messageQueue.push(k); blog('queued', k, 'queueLen=', messageQueue.length); }
     }
-    return { rows: rows.length, unread: unread.length, queue: messageQueue.length, sample: rows.slice(0, 8).map(r => ({ k: rowKey(r), unread: rowIsUnread(r) })) };
+    return {
+      rows: rows.length, unread: unread.length, queue: messageQueue.length,
+      sample: rows.slice(0, 10).map(rowInfo),
+      candidates: rawInboxCandidates(),          // raw DOM for calibration
+    };
   }
 
   // Dispatcher: open the next queued conversation (that isn't already open) so the
@@ -358,7 +404,7 @@
       messageQueue.splice(i, 1);                 // remove; will re-queue if still unread later
       blog('→ open', k, 'queueLen=', messageQueue.length);
       setStatus('busy', 'Opening next chat…');
-      clickEl(row);
+      clickConversation(row);                    // click the real clickable target
       return true;
     }
     return false;
