@@ -40,6 +40,11 @@
     fetchTimeoutMs: 35000,   // hard timeout so a stalled request can't hang the monitor
     watchdogMs: 2500,        // master health/scan loop interval
     staleScanMs: 15000,      // no scan in this long → show "Reconnecting" + self-heal
+    // Facebook's realtime push can silently drop in a long-running tab, so the
+    // inbox stops receiving new messages until a reload. We auto re-sync (reload)
+    // ONLY when idle. Reload less often when realtime looks healthy, more often
+    // when the inbox looks stale (no new message for a while).
+    inboxRefreshMs: 180000,  // base re-sync cadence (3 min) when idle
   };
 
   const SEL = (window.FBM_SELECTORS && window.FBM_SELECTORS.chat) || {};
@@ -52,6 +57,7 @@
   let currentAccountId = '';          // which Facebook account THIS Chrome profile is
   // Health / monitoring state — the watchdog uses these to detect a stalled listener.
   let lastScanAt = 0, lastReplyAt = 0, lastActionAt = 0, lastDetectAt = 0, tickStartedAt = 0;
+  let lastReloadAt = Date.now();      // page load counts as the last inbox re-sync
 
   chrome.storage?.local?.get?.(['mpAutoSend', 'fbmAccountId'], v => {
     if (typeof v?.mpAutoSend === 'boolean') CONFIG.autoSend = v.mpAutoSend;
@@ -610,6 +616,32 @@
     setStatus('ok', `Monitoring ✓ · ${sentCount} sent${tail}`);
   }
 
+  // Idle = safe to reload (not mid-tick, nothing pending in the open thread, no
+  // unread queued). We only ever auto-refresh when idle, so a reply is never cut off.
+  function inboxIsIdle() {
+    if (ticking) return false;
+    if (messageQueue.length) return false;
+    if (conversationInfo().title && latestInbound()) return false;
+    return true;
+  }
+
+  // Auto re-sync the inbox by reloading — the only reliable recovery when
+  // Facebook's realtime push drops and new messages stop rendering. Throttled and
+  // idle-gated; reloads less often when realtime looks healthy (a message arrived
+  // recently), more often when the inbox looks stale.
+  function maybeAutoRefresh() {
+    if (!onChatPage() || !inboxIsIdle()) return;
+    const now = Date.now();
+    const sinceReload = now - lastReloadAt;
+    const sinceInbound = lastDetectAt ? now - lastDetectAt : Infinity;
+    const interval = sinceInbound < CONFIG.inboxRefreshMs ? CONFIG.inboxRefreshMs * 2 : CONFIG.inboxRefreshMs;
+    if (sinceReload < interval) return;
+    lastReloadAt = now;                              // (reset on the fresh page load anyway)
+    blog('auto re-sync inbox (reload)', 'idleFor=' + Math.round(sinceReload / 1000) + 's');
+    setStatus('busy', 'Re-syncing inbox…');
+    location.reload();
+  }
+
   // Master watchdog: ALWAYS runs (independent of `active`), so monitoring recovers
   // on its own — no page refresh needed. Handles SPA navigation, re-activates if
   // needed, re-attaches a dead observer, frees a stuck tick, drives a guaranteed
@@ -628,6 +660,8 @@
       if (active && lastScanAt && Date.now() - lastScanAt > CONFIG.staleScanMs * 2) { deactivate(); activate(); }
       // Guaranteed scan every cycle — detection never depends on FB firing mutations.
       if (active) schedule();
+      // Periodically reload the inbox to re-sync if Facebook's realtime dropped.
+      maybeAutoRefresh();
 
       updateBadgeHealth();
     } catch (e) { console.warn('[FBM bridge] watchdog', e); }
