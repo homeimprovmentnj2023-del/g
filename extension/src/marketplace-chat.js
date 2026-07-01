@@ -40,11 +40,13 @@
     fetchTimeoutMs: 35000,   // hard timeout so a stalled request can't hang the monitor
     watchdogMs: 2500,        // master health/scan loop interval
     staleScanMs: 15000,      // no scan in this long → show "Reconnecting" + self-heal
+    stuckMs: 20000,          // pending on ONE chat this long w/o replying → skip it, scan inbox
     // Facebook's realtime push can silently drop in a long-running tab, so the
-    // inbox stops receiving new messages until a reload. We auto re-sync (reload)
-    // ONLY when idle. Reload less often when realtime looks healthy, more often
-    // when the inbox looks stale (no new message for a while).
-    inboxRefreshMs: 180000,  // base re-sync cadence (3 min) when idle
+    // inbox stops receiving new messages until a reload. Reloading is disruptive
+    // (FB restores the last-open chat), so we only do it as a RARE last resort:
+    // when the tab has been idle AND no new message has been seen for a long time
+    // (realtime likely died). Normal operation relies on realtime + the observer.
+    reloadIdleStaleMs: 600000,  // only reload after 10 min idle + no new message
   };
 
   const SEL = (window.FBM_SELECTORS && window.FBM_SELECTORS.chat) || {};
@@ -483,24 +485,38 @@
   // ── One tick: reply to the open thread if it has a pending message; otherwise
   //    dispatch the next unread conversation. A thread is never excluded. ───────
   let ticking = false;
+  let pendingKey = '', pendingSince = 0;              // which chat looks pending, and since when
   async function check() {
     if (ticking) return;
     ticking = true; tickStartedAt = Date.now();
     try {
       lastScanAt = Date.now();                       // a scan ran → monitoring is alive
       const scan = refreshQueue();
-      reportDiag({ inbox: scan, queueLen: messageQueue.length, openThread: keyOf(conversationInfo().title) });
+      const openKey = keyOf(conversationInfo().title);
+      reportDiag({ inbox: scan, queueLen: messageQueue.length, openThread: openKey });
 
       // 1) If the OPEN thread has an unanswered customer message, reply to it
       //    (paced so we never burst), then RESET back to inbox monitoring.
-      const pending = conversationInfo().title ? latestInbound() : null;
+      const pending = openKey ? latestInbound() : null;
       if (pending) {
-        if (Date.now() - lastReplyAt >= CONFIG.minReplyGapMs) {
+        // Track how long we've been stuck on THIS chat without replying. FB
+        // restores the last-open chat after a reload; if we can't make progress on
+        // it (send fails, name-collision echo, etc.) we must not let it freeze the
+        // whole inbox — after stuckMs we skip it and go scan for other customers.
+        if (pendingKey !== openKey) { pendingKey = openKey; pendingSince = Date.now(); }
+        const stuck = Date.now() - pendingSince > CONFIG.stuckMs;
+        if (!stuck && Date.now() - lastReplyAt >= CONFIG.minReplyGapMs) {
           const replied = await handleOpenConversation();
-          if (replied) { lastReplyAt = Date.now(); returnToInbox(); }   // ← reset after every reply
+          if (replied) { lastReplyAt = Date.now(); pendingKey = ''; pendingSince = 0; returnToInbox(); }
+        } else if (stuck) {
+          blog('unstick: no progress on', openKey, '→ scanning inbox for others');
+          if (openKey) threadState.set(openKey, Date.now());   // brief cooldown, don't reopen instantly
+          pendingKey = ''; pendingSince = 0;
+          dispatchNext();
         }
       } else {
-        // 2) Open thread is idle → move to the next unread conversation.
+        // 2) Open thread is idle/answered → move to the next unread conversation.
+        pendingKey = ''; pendingSince = 0;
         dispatchNext();
       }
       pruneMemory();
@@ -727,19 +743,20 @@
     return true;
   }
 
-  // Auto re-sync the inbox by reloading — the only reliable recovery when
-  // Facebook's realtime push drops and new messages stop rendering. Throttled and
-  // idle-gated; reloads less often when realtime looks healthy (a message arrived
-  // recently), more often when the inbox looks stale.
+  // Reload is a RARE last resort. Facebook restores the last-open chat on reload,
+  // which fights with clean inbox monitoring, so we avoid it during normal use and
+  // only reload when the tab has been idle AND no new message has been seen for a
+  // long time — i.e. realtime push has most likely died and nothing else will
+  // recover it. When realtime is healthy (messages keep arriving), we never reload.
   function maybeAutoRefresh() {
     if (!onChatPage() || !inboxIsIdle()) return;
     const now = Date.now();
     const sinceReload = now - lastReloadAt;
-    const sinceInbound = lastDetectAt ? now - lastDetectAt : Infinity;
-    const interval = sinceInbound < CONFIG.inboxRefreshMs ? CONFIG.inboxRefreshMs * 2 : CONFIG.inboxRefreshMs;
-    if (sinceReload < interval) return;
-    lastReloadAt = now;                              // (reset on the fresh page load anyway)
-    blog('auto re-sync inbox (reload)', 'idleFor=' + Math.round(sinceReload / 1000) + 's');
+    const sinceInbound = lastDetectAt ? now - lastDetectAt : (now - booted);
+    if (sinceReload < CONFIG.reloadIdleStaleMs) return;   // don't reload often
+    if (sinceInbound < CONFIG.reloadIdleStaleMs) return;  // recent activity → realtime OK, skip
+    lastReloadAt = now;                                   // (reset on the fresh page load anyway)
+    blog('safety reload (idle+stale)', 'noNewMsgFor=' + Math.round(sinceInbound / 1000) + 's');
     setStatus('busy', 'Re-syncing inbox…');
     location.reload();
   }
