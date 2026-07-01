@@ -36,7 +36,7 @@
     retryBackoffMs: 1200,
     sendVerifyMs: 700,       // wait this long, then confirm the compose box cleared
     settleMs: 1500,          // let a freshly-opened thread render before acting
-    minActionGapMs: 5000,    // pace replies/opens (anti-spam + human cadence)
+    minReplyGapMs: 3000,     // min gap between sends (anti-spam + human cadence)
     fetchTimeoutMs: 35000,   // hard timeout so a stalled request can't hang the monitor
     watchdogMs: 2500,        // master health/scan loop interval
     staleScanMs: 15000,      // no scan in this long → show "Reconnecting" + self-heal
@@ -178,9 +178,21 @@
     } catch (_) {}
   }
 
+  // ── Inbox-level thread state. A thread is NEVER permanently marked "done":
+  //    we only remember when we last OPENED it (a short re-open cooldown), so
+  //    follow-up messages always re-enter monitoring. ──────────────────────────
+  const threadState = new Map();         // rowKey -> last time we opened that row
+  const keyOf = t => String(t || '').toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '').slice(0, 48);
+  function rowKey(row) {
+    const a = (row.tagName === 'A' && row.getAttribute('href')) ? row : row.querySelector('a[href*="/t/"]');
+    const m = a && (a.getAttribute('href') || '').match(/\/t\/(\d+)/);
+    if (m) return 't' + m[1];            // most stable when available
+    return keyOf(row.getAttribute('aria-label') || row.textContent);
+  }
+  const blog = (...a) => { try { console.info('[FBM bridge]', ...a); } catch (_) {} };
+
   // ── Reply to the currently OPEN conversation. Returns true if it just replied,
   //    false if there's nothing to do here (so the caller can move to the next).
-  const handledAt = new Map();           // conversation key -> last time we acted on it
   async function handleOpenConversation() {
     // Marketplace-only lock: only act inside a real open Marketplace conversation
     // (the compose box reads "Write to <Buyer · Listing>"). Ignores everything else.
@@ -252,7 +264,7 @@
     const ok = await deliverReply(String(reply));
     if (ok) {
       sentCount++;
-      handledAt.set((conversationInfo().title || tid).toLowerCase(), Date.now());
+      blog('replied', keyOf(conversationInfo().title || tid), '· total', sentCount);
       setStatus('ok', `Sent ✓ ${sentCount} · ${new Date().toLocaleTimeString()}`);
       return true;
     }
@@ -261,23 +273,44 @@
     return false;
   }
 
-  // ── Inbox orchestration ────────────────────────────────────────────────────
-  // After finishing the open chat (or when it's idle), open the NEXT unread
-  // conversation in the list so we keep monitoring ALL conversations, not one.
+  // ── Inbox watcher: enumerate conversation rows in the left list (never the
+  //    open thread's DOM). Broad + de-duped so it survives FB layout variance.
   function conversationRows() {
-    const sel = SEL.conversationRow || 'a[href*="/t/"], [aria-label^="Conversation titled"], div[role="row"]';
-    const half = Math.max(360, window.innerWidth * 0.45);
-    return $$(sel).filter(el => {
-      if (!visible(el)) return false;
+    const sel = SEL.conversationRow || 'a[href*="/t/"], a[href*="/messages/"], [aria-label^="Conversation titled"], div[role="row"], div[role="gridcell"]';
+    const box = composeBox();
+    const composerLeft = box ? box.getBoundingClientRect().left : (window.innerWidth * 0.5);
+    const out = [];
+    $$(sel).forEach(el => {
+      if (!visible(el)) return;
       const r = el.getBoundingClientRect();
-      return r.left < half && r.width > 120 && r.height > 24;   // left-pane conversation rows
+      // Conversation rows sit to the LEFT of the composer (the list pane) and are
+      // reasonably tall. This excludes header/message-area elements.
+      if (r.right > composerLeft - 8) return;
+      if (r.width < 120 || r.height < 30 || r.height > 140) return;
+      out.push(el);
     });
+    return out;
   }
 
+  // Is this conversation row unread (has a new customer message)? Several
+  // independent signals so one FB style change can't blind us.
   function rowIsUnread(row) {
     if (SEL.unreadHint) { try { if (row.matches(SEL.unreadHint) || row.querySelector(SEL.unreadHint)) return true; } catch (_) {} }
-    if (/\bunread\b/i.test(row.getAttribute('aria-label') || '')) return true;
-    // Facebook renders an unread conversation's name/preview in bold.
+    const al = row.getAttribute('aria-label') || '';
+    if (/\bunread\b/i.test(al)) return true;
+    if (row.querySelector('[aria-label*="nread" i]')) return true;
+    // Blue unread dot: a small round element with a Facebook-blue background.
+    let dot = false;
+    row.querySelectorAll('div, span, i').forEach(e => {
+      if (dot) return;
+      const r = e.getBoundingClientRect();
+      if (r.width > 2 && r.width <= 16 && Math.abs(r.width - r.height) <= 5) {
+        const m = (getComputedStyle(e).backgroundColor || '').match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
+        if (m && +m[3] > 170 && +m[3] - +m[1] > 55 && +m[3] - +m[2] > 25) dot = true; // blue-ish
+      }
+    });
+    if (dot) return true;
+    // Bold name/preview (FB renders unread rows bold).
     let bold = false;
     row.querySelectorAll('span, div').forEach(s => {
       if (bold) return;
@@ -287,35 +320,63 @@
     return bold;
   }
 
-  function openNextUnread() {
-    const openTitle = (conversationInfo().title || '').toLowerCase();
-    for (const r of conversationRows()) {
-      if (!rowIsUnread(r)) continue;
-      const label = (r.getAttribute('aria-label') || r.textContent || '').trim().toLowerCase();
-      if (openTitle && label.includes(openTitle.slice(0, 12))) continue;   // already open
-      const last = handledAt.get(label);
-      if (last && Date.now() - last < 12000) continue;                     // just touched it
-      setStatus('busy', 'Opening next unread chat…');
-      handledAt.set(label, Date.now());
-      clickEl(r);                                  // open it; next tick will reply
+  // Build the queue of thread keys that currently need a reply (unread rows).
+  function refreshQueue() {
+    const rows = conversationRows();
+    const unread = rows.filter(rowIsUnread);
+    for (const row of unread) {
+      const k = rowKey(row);
+      if (!k) continue;
+      const opened = threadState.get(k);
+      if (opened && Date.now() - opened < 5000) continue;      // just opened → let FB mark read
+      if (!messageQueue.includes(k)) { messageQueue.push(k); blog('queued', k, 'queueLen=', messageQueue.length); }
+    }
+    return { rows: rows.length, unread: unread.length, queue: messageQueue.length, sample: rows.slice(0, 8).map(r => ({ k: rowKey(r), unread: rowIsUnread(r) })) };
+  }
+
+  // Dispatcher: open the next queued conversation (that isn't already open) so the
+  // reply path can answer it on the next tick. Row refs are re-resolved by key.
+  const messageQueue = [];
+  function dispatchNext() {
+    if (!messageQueue.length) return false;
+    for (let i = 0; i < messageQueue.length; i++) {
+      const k = messageQueue[i];
+      let row = null;
+      for (const r of conversationRows()) { if (rowKey(r) === k) { row = r; break; } }
+      if (!row || !rowIsUnread(row)) { messageQueue.splice(i, 1); i--; continue; }  // gone/read → drop
+      threadState.set(k, Date.now());
+      messageQueue.splice(i, 1);                 // remove; will re-queue if still unread later
+      blog('→ open', k, 'queueLen=', messageQueue.length);
+      setStatus('busy', 'Opening next chat…');
+      clickEl(row);
       return true;
     }
     return false;
   }
 
-  // ── One tick: handle the open conversation, otherwise advance to the next. ───
-  // Re-entrancy guarded; records health timestamps; paces actions to avoid bursts.
+  // ── One tick: reply to the open thread if it has a pending message; otherwise
+  //    dispatch the next unread conversation. A thread is never excluded. ───────
   let ticking = false;
   async function check() {
     if (ticking) return;
     ticking = true; tickStartedAt = Date.now();
     try {
       lastScanAt = Date.now();                       // a scan ran → monitoring is alive
-      reportDiag();
-      if (Date.now() - lastActionAt < CONFIG.minActionGapMs) return;   // pace actions
-      const replied = await handleOpenConversation();
-      if (replied) { lastReplyAt = Date.now(); lastActionAt = Date.now(); }
-      else if (openNextUnread()) { lastActionAt = Date.now(); }
+      const scan = refreshQueue();
+      reportDiag({ inbox: scan, queueLen: messageQueue.length, openThread: keyOf(conversationInfo().title) });
+
+      // 1) If the OPEN thread has an unanswered customer message, reply to it
+      //    (paced so we never burst). Don't navigate away while it's pending.
+      const pending = conversationInfo().title ? latestInbound() : null;
+      if (pending) {
+        if (Date.now() - lastReplyAt >= CONFIG.minReplyGapMs) {
+          const replied = await handleOpenConversation();
+          if (replied) lastReplyAt = Date.now();
+        }
+      } else {
+        // 2) Open thread is idle → move to the next unread conversation.
+        dispatchNext();
+      }
       pruneMemory();
     } catch (e) { console.warn('[FBM bridge]', e); }
     finally { ticking = false; tickStartedAt = 0; }
@@ -480,6 +541,7 @@
     // the #1 cause of "stops detecting until refresh".
     observer = new MutationObserver(schedule);
     observer.observe(document.body, { childList: true, subtree: true });
+    blog('observer attached (document.body)');
   }
 
   function activate() {
@@ -500,13 +562,14 @@
     try { observer && observer.disconnect(); } catch (_) {}
     observer = null;
     unmountBadge();
+    blog('observer detached / deactivated');
   }
 
   // Cap the de-dupe sets so they can't grow unbounded over many hours/conversations.
   function pruneMemory() {
     const cap = (set, n) => { if (set.size > n) { const keep = [...set].slice(-Math.floor(n / 2)); set.clear(); keep.forEach(x => set.add(x)); } };
     cap(seen, 600); cap(botSent, 400);
-    if (handledAt.size > 300) { const e = [...handledAt.entries()].sort((a, b) => a[1] - b[1]).slice(-150); handledAt.clear(); e.forEach(([k, v]) => handledAt.set(k, v)); }
+    if (threadState.size > 300) { const e = [...threadState.entries()].sort((a, b) => a[1] - b[1]).slice(-150); threadState.clear(); e.forEach(([k, v]) => threadState.set(k, v)); }
   }
 
   function timeAgo(t) {
