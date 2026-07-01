@@ -289,16 +289,20 @@
     const box = composeBox();
     return box ? box.getBoundingClientRect().left : window.innerWidth;   // composer marks where the list ends
   }
+  // A listing/product link — clicking this opens the WRONG page. Never our target.
+  const LISTING_HREF = /\/marketplace\/item|\/item\/|\/commerce\/|\/groups\//i;
+  const isListingLink = el => !!(el && el.tagName === 'A' && LISTING_HREF.test(el.getAttribute('href') || ''));
+
   function conversationRows() {
     if (SEL.conversationRow) return $$(SEL.conversationRow).filter(visible);
-    // 1) Real conversation links (most reliable AND directly clickable).
+    // 1) Real conversation links (/t/…) — the correct, directly-clickable target.
     let rows = $$('a[href*="/t/"]').filter(el => visible(el) && /\/t\/\d/.test(el.getAttribute('href') || ''));
     if (rows.length) return rows;
-    // 2) Fallback: clickable list entries (role=link/button/row) that look like a
-    //    conversation (name + preview) and sit in the left list pane.
+    // 2) Fallback: clickable list entries in the LEFT list pane that look like a
+    //    conversation (name + preview) — explicitly NOT listing/product links.
     const right = listPaneRight() - 20;
-    rows = $$('[role="row"],[role="gridcell"],[role="link"],[role="button"]').filter(el => {
-      if (!visible(el)) return false;
+    rows = $$('[role="row"],[role="gridcell"],[role="listitem"],[role="link"],[role="button"]').filter(el => {
+      if (!visible(el) || isListingLink(el)) return false;
       const r = el.getBoundingClientRect();
       if (r.left > right) return false;                    // must be in the list pane
       if (r.width < 130 || r.height < 40 || r.height > 130) return false;
@@ -308,13 +312,25 @@
     return rows.filter((el, i) => !rows.some((o, j) => j !== i && o.contains(el) && o !== el));
   }
 
-  // Click the real clickable target for a conversation row (row itself may be a
-  // wrapper; the handler is usually on an <a>/role=link/role=button).
+  // Open the CONVERSATION for a row — never the listing/product page. Prefer a
+  // real /t/ conversation link, then a non-listing role=button/link, else click
+  // the row CONTAINER itself (FB's row onClick opens the chat; we never dispatch
+  // on the listing thumbnail <a>, which is what was opening the product page).
   function clickConversation(row) {
-    const t = row.closest('a[href],[role="link"],[role="button"]')
-      || row.querySelector('a[href],[role="link"],[role="button"]')
-      || row;
-    clickEl(t);
+    const convLink = (row.matches && row.matches('a[href*="/t/"]')) ? row : (row.querySelector && row.querySelector('a[href*="/t/"]'));
+    if (convLink) { blog('click convLink', convLink.getAttribute('href')); clickEl(convLink); return; }
+    const inner = [...(row.querySelectorAll ? row.querySelectorAll('[role="button"],[role="link"]') : [])]
+      .find(c => !isListingLink(c) && !(c.closest && isListingLink(c.closest('a[href]'))));
+    if (inner) { blog('click inner button/link'); clickEl(inner); return; }
+    // Click the row itself, but if the row IS/inside a listing link, step out to a
+    // non-listing ancestor so we don't navigate to the product page.
+    let target = row;
+    if (isListingLink(target) || (target.closest && isListingLink(target.closest('a[href]')))) {
+      const up = target.closest('[role="row"],[role="gridcell"],[role="listitem"]');
+      if (up && !isListingLink(up)) target = up;
+    }
+    blog('click row container');
+    clickEl(target);
   }
 
   // Is this conversation row unread (has a new customer message)? Several
@@ -347,10 +363,13 @@
 
   // Compact description of a candidate row (for calibration diagnostics).
   function rowInfo(r) {
-    const a = r.matches && r.matches('a[href]') ? r : (r.querySelector && r.querySelector('a[href]'));
+    const hrefs = [...(r.querySelectorAll ? r.querySelectorAll('a[href]') : [])].map(a => a.getAttribute('href') || '');
+    if (r.tagName === 'A' && r.getAttribute('href')) hrefs.unshift(r.getAttribute('href'));
     return {
       tag: (r.tagName || '').toLowerCase(), role: r.getAttribute('role') || '',
-      href: ((a && a.getAttribute('href')) || '').slice(0, 42),
+      hrefs: hrefs.slice(0, 3).map(h => h.slice(0, 44)),
+      hasConvLink: hrefs.some(h => /\/t\/\d/.test(h)),
+      hasListing: hrefs.some(h => LISTING_HREF.test(h)),
       aria: (r.getAttribute('aria-label') || '').slice(0, 48),
       text: (r.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 48),
       unread: rowIsUnread(r), key: rowKey(r),
