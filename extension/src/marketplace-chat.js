@@ -583,7 +583,18 @@
     // SECOND time — the cause of "text text" appearing inside one message bubble.
     try { document.execCommand('selectAll', false, null); } catch (_) {}
     document.execCommand('insertText', false, text);
-    return true;
+    // Verify the text actually landed. Some composers ignore execCommand; fall back
+    // to input events ONLY when nothing was inserted (so we never double-insert —
+    // doubling happens only when BOTH execCommand and an InputEvent fire).
+    if (!(box.textContent || '').trim()) {
+      try {
+        box.dispatchEvent(new InputEvent('beforeinput', { inputType: 'insertText', data: text, bubbles: true, cancelable: true }));
+        box.dispatchEvent(new InputEvent('input', { inputType: 'insertText', data: text, bubbles: true }));
+      } catch (_) {}
+    }
+    const ok = (box.textContent || '').trim().length > 0;
+    if (!ok) console.warn('[FBM bridge] text did not land in compose box');
+    return ok;
   }
 
   // The composer toolbar — the ancestor that holds BOTH the action buttons (emoji,
@@ -606,14 +617,25 @@
   // must click the real button (the paper-plane that replaces the "like" thumb
   // once text is in the box).
   function findSendButton() {
-    const root = composerRoot();
-    if (!root) return null;
-    const btns = Array.from(root.querySelectorAll('[role="button"]')).filter(b => visible(b) && b.querySelector('svg, i, image'));
+    const box = composeBox();
+    // Search a scope a few levels up from the box (the whole composer row/panel),
+    // which is more reliable than an emoji-anchored root that can miss the button.
+    let scope = composerRoot();
+    if (box) { let s = box; for (let i = 0; i < 5 && s.parentElement; i++) s = s.parentElement; if (!scope || (scope.contains && !scope.contains(box))) scope = s; }
+    if (!scope) return null;
+    const boxRect = box ? box.getBoundingClientRect() : null;
+    const btns = Array.from(scope.querySelectorAll('[role="button"], button')).filter(b =>
+      visible(b) && b !== box && !(box && b.contains(box)) && b.querySelector('svg, i, image'));
     // 1) Explicit send label (EN/ES) if present.
     let send = btns.find(b => /^(send|enviar|press enter to send|send message|enviar mensaje)$/i.test((b.getAttribute('aria-label') || '').trim()));
     if (send) return send;
-    // 2) Otherwise the composer icon that is NOT a known non-send action (right-most).
-    const rest = btns.filter(b => { const a = b.getAttribute('aria-label') || ''; return a && !NON_SEND.test(a); });
+    // 2) A composer-row icon that is NOT a known non-send action → the paper-plane.
+    //    Prefer buttons on the same row as the box (the Send button sits beside it).
+    let rest = btns.filter(b => { const a = b.getAttribute('aria-label') || ''; return !a || !NON_SEND.test(a); });
+    if (boxRect) {
+      const sameRow = rest.filter(b => { const r = b.getBoundingClientRect(); return Math.abs(r.top - boxRect.top) < 90 && r.left >= boxRect.left - 4; });
+      if (sameRow.length) rest = sameRow;
+    }
     if (rest.length) { rest.sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left); return rest[rest.length - 1]; }
     return null;
   }
@@ -627,14 +649,29 @@
   // be confirmed from the dashboard if auto-send still misses.
   let _sentDbgAt = 0;
   function reportSendDebug(picked) {
-    if (Date.now() - _sentDbgAt < 5000) return; _sentDbgAt = Date.now();
+    if (Date.now() - _sentDbgAt < 3000) return; _sentDbgAt = Date.now();
     try {
-      const root = composerRoot();
-      const btns = (root ? Array.from(root.querySelectorAll('[role="button"]')).filter(visible) : [])
-        .map(b => ({ ariaLabel: b.getAttribute('aria-label') || '', text: (b.textContent || '').trim().slice(0, 20), svg: !!b.querySelector('svg, i, image') }));
+      const box = composeBox();
+      const boxRect = box ? box.getBoundingClientRect() : null;
+      // Scope = a few levels up from the box (the whole composer), so we see the
+      // Send button even if it lives outside the emoji-anchored root.
+      let scope = box; for (let i = 0; i < 5 && scope && scope.parentElement; i++) scope = scope.parentElement;
+      const btns = (scope ? Array.from(scope.querySelectorAll('[role="button"], button')).filter(visible) : [])
+        .slice(0, 24)
+        .map(b => { const r = b.getBoundingClientRect(); return {
+          ariaLabel: b.getAttribute('aria-label') || '', title: b.getAttribute('title') || '',
+          text: (b.textContent || '').trim().slice(0, 16), svg: !!b.querySelector('svg, i, image'),
+          rightOfBox: boxRect ? Math.round(r.left - boxRect.right) : null, x: Math.round(r.left),
+        }; });
       fetch(`${BACKEND}/api/debug`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ kind: 'mp-send-debug', url: location.href, pickedAria: picked ? (picked.getAttribute('aria-label') || '(icon, no label)') : null, composerButtons: btns }),
+        body: JSON.stringify({
+          kind: 'mp-send-debug', url: location.href,
+          boxFound: !!box, boxAria: box ? (box.getAttribute('aria-label') || '') : null,
+          boxText: box ? (box.textContent || '').trim().slice(0, 50) : null,   // did typing land?
+          pickedAria: picked ? (picked.getAttribute('aria-label') || '(icon, no label)') : null,
+          composerButtons: btns,
+        }),
       }).catch(() => {});
     } catch (_) {}
   }
