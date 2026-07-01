@@ -252,7 +252,7 @@ module.exports = {
   // ── Debug DOM snapshots (to capture Facebook's real form markup once) ──────────
   addDebug: (snap) => {
     data.debug_snapshots.unshift({ at: now(), ...snap });
-    data.debug_snapshots = data.debug_snapshots.slice(0, 10);
+    data.debug_snapshots = data.debug_snapshots.slice(0, 60);
     saveNow();
   },
   getDebug: () => data.debug_snapshots,

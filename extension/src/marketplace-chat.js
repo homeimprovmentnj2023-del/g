@@ -373,6 +373,20 @@
   function rowInfo(r) {
     const hrefs = [...(r.querySelectorAll ? r.querySelectorAll('a[href]') : [])].map(a => a.getAttribute('href') || '');
     if (r.tagName === 'A' && r.getAttribute('href')) hrefs.unshift(r.getAttribute('href'));
+    // Unread-signal detail so I can see EXACTLY how FB marks an unread row.
+    let fw = 0, dot = false, dotColor = '';
+    (r.querySelectorAll ? r.querySelectorAll('span, div') : []).forEach(s => {
+      const t = (s.textContent || '').trim(); if (!t) return;
+      const w = parseInt(getComputedStyle(s).fontWeight, 10) || 0; if (w > fw) fw = w;
+    });
+    (r.querySelectorAll ? r.querySelectorAll('div, span, i') : []).forEach(e => {
+      if (dot) return; const rr = e.getBoundingClientRect();
+      if (rr.width > 2 && rr.width <= 18 && Math.abs(rr.width - rr.height) <= 6) {
+        const bg = getComputedStyle(e).backgroundColor || '';
+        const m = bg.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?/);
+        if (m && (+(m[4] || 1)) > 0.2 && +m[3] > 120) { dot = true; dotColor = bg; }
+      }
+    });
     return {
       tag: (r.tagName || '').toLowerCase(), role: r.getAttribute('role') || '',
       hrefs: hrefs.slice(0, 3).map(h => h.slice(0, 44)),
@@ -381,6 +395,7 @@
       aria: (r.getAttribute('aria-label') || '').slice(0, 48),
       text: (r.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 48),
       unread: rowIsUnread(r), key: rowKey(r),
+      fw, dot, dotColor: dotColor.slice(0, 24),      // font-weight + any colored dot
     };
   }
   // Deep scan: candidate conversation rows are clickable blocks with an avatar
@@ -425,7 +440,7 @@
     }
     return {
       rows: rows.length, unread: unread.length, queue: messageQueue.length,
-      sample: rows.slice(0, 10).map(rowInfo),
+      sample: rows.slice(0, 24).map(rowInfo),
       candidates: rawInboxCandidates(),          // raw DOM for calibration
       regions: inboxRegions(),
     };
