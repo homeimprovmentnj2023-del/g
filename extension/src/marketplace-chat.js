@@ -147,9 +147,13 @@
   // Latest message ONLY IF it's the buyer's (so the bot answers, and never
   // replies to itself or to a thread where we had the last word).
   function latestInbound() {
-    const msgs = scanMessages().filter(m => !m.bot && !botSent.has(norm(m.text)));
+    const msgs = scanMessages();
     if (!msgs.length) return null;
-    const last = msgs[msgs.length - 1];
+    const last = msgs[msgs.length - 1];          // the ACTUAL last message in the thread
+    // If WE had the last word (our reply / a text we sent), the thread is
+    // answered — nothing pending. (The old code filtered our reply out first, so
+    // an already-answered message looked pending forever → stuck on that chat.)
+    if (last.bot || botSent.has(norm(last.text))) return null;
     const { buyer } = conversationInfo();
     const fromBuyer = buyer ? last.sender.toLowerCase().includes(buyer.toLowerCase()) : true;
     return (fromBuyer && last.text) ? { row: last.el, text: last.text, sender: last.sender } : null;
@@ -354,6 +358,20 @@
     return false;
   }
 
+  // ── Reset after a reply: detach from the conversation and return to clean
+  //    inbox monitoring. SPA-safe — never forces a full page reload. ───────────
+  function returnToInbox() {
+    // The practical "return to inbox": move to the next waiting customer.
+    if (dispatchNext()) { blog('reset → next customer'); return; }
+    // No one else waiting → try to close/deselect the current chat if FB offers a
+    // control (some layouts have a back/close button; two-pane inboxes don't).
+    const close = document.querySelector('div[aria-label="Close chat"][role="button"], div[aria-label="Close"][role="button"], div[aria-label="Back"][role="button"]');
+    if (close && visible(close)) { blog('reset → closed chat view'); clickEl(close); return; }
+    // Otherwise stay put: the tick keeps scanning the WHOLE inbox every cycle, so
+    // the next unread (from anyone, including a follow-up) is picked up on its own.
+    blog('reset → monitoring inbox');
+  }
+
   // ── One tick: reply to the open thread if it has a pending message; otherwise
   //    dispatch the next unread conversation. A thread is never excluded. ───────
   let ticking = false;
@@ -366,12 +384,12 @@
       reportDiag({ inbox: scan, queueLen: messageQueue.length, openThread: keyOf(conversationInfo().title) });
 
       // 1) If the OPEN thread has an unanswered customer message, reply to it
-      //    (paced so we never burst). Don't navigate away while it's pending.
+      //    (paced so we never burst), then RESET back to inbox monitoring.
       const pending = conversationInfo().title ? latestInbound() : null;
       if (pending) {
         if (Date.now() - lastReplyAt >= CONFIG.minReplyGapMs) {
           const replied = await handleOpenConversation();
-          if (replied) lastReplyAt = Date.now();
+          if (replied) { lastReplyAt = Date.now(); returnToInbox(); }   // ← reset after every reply
         }
       } else {
         // 2) Open thread is idle → move to the next unread conversation.
