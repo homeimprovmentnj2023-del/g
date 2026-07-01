@@ -291,25 +291,33 @@
   }
   // A listing/product link — clicking this opens the WRONG page. Never our target.
   const LISTING_HREF = /\/marketplace\/item|\/item\/|\/commerce\/|\/groups\//i;
+  // Marketplace navigation / category / menu links — NOT conversations.
+  const NAV_HREF = /^\/$|^\/marketplace\/?$|\/marketplace\/(jobs|notifications|inbox|status|you|create|category|learn|saved|buying|selling)\b|\/search\b|category_id=/i;
   const isListingLink = el => !!(el && el.tagName === 'A' && LISTING_HREF.test(el.getAttribute('href') || ''));
+  const isNavLike = el => {
+    if (!el) return false;
+    if (el.getAttribute && el.getAttribute('role') === 'menuitem') return true;
+    const a = el.tagName === 'A' ? el : (el.closest && el.closest('a[href]'));
+    return !!(a && NAV_HREF.test(a.getAttribute('href') || ''));
+  };
+
+  // A conversation row = a clickable list entry with a person name + message
+  // preview, in the CHAT LIST — not the nav sidebar, a menu item, or a listing.
+  function looksLikeConversation(el) {
+    if (!visible(el) || isListingLink(el) || isNavLike(el)) return false;
+    const r = el.getBoundingClientRect();
+    if (r.width < 150 || r.height < 44 || r.height > 130) return false;
+    if (!el.querySelector('img, image, svg')) return false;          // avatar present
+    const txt = (el.textContent || '').trim();
+    return txt.length > 3 && txt.length < 200;                        // name + short preview
+  }
 
   function conversationRows() {
     if (SEL.conversationRow) return $$(SEL.conversationRow).filter(visible);
-    // 1) Real conversation links (/t/…) — the correct, directly-clickable target.
-    let rows = $$('a[href*="/t/"]').filter(el => visible(el) && /\/t\/\d/.test(el.getAttribute('href') || ''));
-    if (rows.length) return rows;
-    // 2) Fallback: clickable list entries in the LEFT list pane that look like a
-    //    conversation (name + preview) — explicitly NOT listing/product links.
-    const right = listPaneRight() - 20;
-    rows = $$('[role="row"],[role="gridcell"],[role="listitem"],[role="link"],[role="button"]').filter(el => {
-      if (!visible(el) || isListingLink(el)) return false;
-      const r = el.getBoundingClientRect();
-      if (r.left > right) return false;                    // must be in the list pane
-      if (r.width < 130 || r.height < 40 || r.height > 130) return false;
-      return (el.textContent || '').trim().length > 2;
-    });
+    let rows = $$('[role="row"],[role="gridcell"],[role="listitem"],div[role="button"],a[role="link"]').filter(looksLikeConversation);
     // Keep the outermost element per row (drop nested duplicates).
-    return rows.filter((el, i) => !rows.some((o, j) => j !== i && o.contains(el) && o !== el));
+    rows = rows.filter((el, i) => !rows.some((o, j) => j !== i && o.contains(el) && o !== el));
+    return rows;
   }
 
   // Open the CONVERSATION for a row — never the listing/product page. Prefer a
@@ -375,20 +383,33 @@
       unread: rowIsUnread(r), key: rowKey(r),
     };
   }
-  // Raw scan of ALL clickable candidates in the left pane — so I can see the real
-  // inbox DOM even if conversationRows() doesn't match your layout.
+  // Deep scan: candidate conversation rows are clickable blocks with an avatar
+  // image + text (name + preview), anywhere, excluding nav/menus/listings — so I
+  // can see the real chat list even when it's not where position heuristics guess.
   function rawInboxCandidates() {
-    const right = listPaneRight() - 10;
     const out = []; const seen = new Set();
-    $$('a[href],[role="row"],[role="link"],[role="button"],[role="gridcell"]').forEach(el => {
-      if (out.length >= 14 || !visible(el)) return;
+    $$('div, li, a').forEach(el => {
+      if (out.length >= 24 || !visible(el)) return;
+      if (isNavLike(el) || isListingLink(el)) return;
       const r = el.getBoundingClientRect();
-      if (r.left > right || r.width < 120 || r.height < 28 || r.height > 160) return;
-      const sig = (el.tagName || '') + (el.getAttribute('role') || '') + Math.round(r.top);
+      if (r.width < 150 || r.height < 44 || r.height > 130) return;
+      if (!el.querySelector('img, image, svg')) return;         // avatar
+      const txt = (el.textContent || '').trim();
+      if (txt.length < 4 || txt.length > 220) return;
+      const sig = Math.round(r.left) + 'x' + Math.round(r.top) + 'x' + Math.round(r.height);
       if (seen.has(sig)) return; seen.add(sig);
-      out.push(rowInfo(el));
+      out.push(Object.assign(rowInfo(el), { rect: [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)] }));
     });
     return out;
+  }
+
+  // Page regions (grid/list/main + labelled containers) so I can locate the chat
+  // list vs the nav sidebar vs the open conversation by aria-label + x position.
+  function inboxRegions() {
+    return $$('[role="grid"],[role="list"],[role="feed"],[role="main"],[role="navigation"],[role="complementary"],[aria-label]')
+      .filter(el => { const r = el.getBoundingClientRect(); return visible(el) && r.height > 200; })
+      .slice(0, 14)
+      .map(el => { const r = el.getBoundingClientRect(); return { role: el.getAttribute('role') || '', aria: (el.getAttribute('aria-label') || '').slice(0, 40), x: Math.round(r.left), w: Math.round(r.width), h: Math.round(r.height) }; });
   }
 
   // Build the queue of thread keys that currently need a reply (unread rows).
@@ -406,6 +427,7 @@
       rows: rows.length, unread: unread.length, queue: messageQueue.length,
       sample: rows.slice(0, 10).map(rowInfo),
       candidates: rawInboxCandidates(),          // raw DOM for calibration
+      regions: inboxRegions(),
     };
   }
 
