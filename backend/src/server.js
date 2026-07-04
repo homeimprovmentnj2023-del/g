@@ -524,7 +524,19 @@ app.get('/api/publish/queue', (_req, res) => res.json(db.getJobs()));
 app.patch('/api/publish/:id', (req, res) => {
   const { status, result } = req.body;
   if (!status) return res.status(400).json({ error: 'status required' });
+  const job = db.getJob(req.params.id);
   db.updateJob(req.params.id, status, result);
+  // Feed the outcome back to the brain's account health (failover + pacing).
+  if (job && job.account_id != null) {
+    if (status === 'done') {
+      db.recordAccountPost(job.account_id, brain.todayStr());
+    } else if (status === 'blocked') {
+      db.markAccountRestricted(job.account_id, 'Facebook blocked a listing');
+      db.recordBrainAction({ kind: 'failover', account_id: job.account_id, template_id: job.template_id,
+        reason: 'listing blocked → account restricted, brain will fail over to another account' });
+      db.addLog({ job_id: job.id, step: 'brain', status: 'block', detail: `Account ${job.account_id} restricted after a block; excluded from posting until cleared` });
+    }
+  }
   res.json({ ok: true });
 });
 
@@ -641,6 +653,19 @@ app.post('/api/brain/accounts/:id/clear', (req, res) => {
   a ? res.json(a) : res.status(404).json({ error: 'Not found' });
 });
 
+// Manually enqueue ONE real post from the current plan — for testing the
+// autofill end-to-end without turning on full autonomy. Optional body {accountId}
+// picks that account's proposal; otherwise the top-ranked proposal is used.
+app.post('/api/brain/enqueue-now', (req, res) => {
+  const accountId = req.body && req.body.accountId != null ? Number(req.body.accountId) : null;
+  const proposals = brain.plan().proposals;
+  const p = accountId != null ? proposals.find(x => x.account_id === accountId) : proposals[0];
+  if (!p) return res.status(404).json({ error: accountId != null ? 'No eligible proposal for that account (restricted, capped, cooling down, or all ZIPs live)' : 'No proposals right now' });
+  if (pendingCountForAccount(p.account_id) > 0) return res.status(409).json({ error: `Account ${p.account_id} already has a pending job` });
+  const job = enqueueProposal(p, 'manual-test');
+  res.status(201).json({ enqueued: job, proposal: p });
+});
+
 // ── Scheduler — enqueues publish jobs on each schedule's daily time slots ──────
 // Runs every minute. The extension's background worker then posts queued jobs
 // (one at a time, with throttling). Time slots use the machine's LOCAL time,
@@ -682,6 +707,59 @@ async function tickScheduler() {
 }
 
 setInterval(() => { tickScheduler().catch(() => {}); }, 60 * 1000);
+
+// ── Autonomous orchestrator: turns the brain's plan into real publish jobs ──────
+// GATED by settings.autonomous (default OFF). When off, this does nothing, so the
+// brain stays observe-only. When on, it enqueues at most ONE job per account per
+// tick and only when that account is idle — the caps/pacing/cooldown that make it
+// safe live in brain.plan(); this just executes the already-vetted proposals.
+
+function pendingCountForAccount(accountId) {
+  return db.getJobs().filter(j => String(j.account_id) === String(accountId)
+    && (j.status === 'pending' || j.status === 'running')).length;
+}
+
+// Build a publish job from a template for a specific account, mark a cooldown so
+// the same template isn't re-enqueued next tick, and log the decision.
+function enqueueProposal(p, kind) {
+  const tpl = db.getTemplate(p.template_id);
+  if (!tpl) return null;
+  const job = db.createJob({
+    template_id: tpl.id, account_id: p.account_id,
+    title: tpl.title, price: tpl.price != null ? String(tpl.price) : '',
+    description: tpl.description || '', location: tpl.location || '',
+    category: tpl.category || '', condition: tpl.condition || '',
+    photos: tpl.photos || '[]', delete_url: p.delete_url || null,
+  });
+  db.addRepost(tpl.id);                                   // cooldown window
+  db.recordBrainAction({ kind: kind || 'enqueue', account_id: p.account_id, zip: p.zip || null,
+    template_id: tpl.id, reason: p.reason, score: p.score != null ? p.score : null });
+  db.addLog({ job_id: job.id, step: 'brain', status: 'info',
+    detail: `${kind || 'enqueue'}: account ${p.account_id} → template #${tpl.id}${p.zip ? ' (ZIP ' + p.zip + ')' : ''} — ${p.reason || ''}` });
+  return job;
+}
+
+function brainTick() {
+  const s = db.getSettings();
+  if (!s.autonomous) return;                              // master switch OFF → do nothing
+
+  // 1) Keep-alive first: replace listings that went inactive (highest priority).
+  for (const r of brain.keepAlive().replacements) {
+    const acct = db.findAccountForZip(r.zip);
+    if (!acct || acct.health?.status === 'restricted') continue;
+    if (pendingCountForAccount(acct.id) > 0) continue;    // one at a time per account
+    enqueueProposal({ account_id: acct.id, template_id: r.template_id, zip: r.zip,
+      delete_url: r.delete_url || null, reason: r.reason, score: r.score }, 'keepalive');
+  }
+
+  // 2) New posts from the ranked plan — one per idle account.
+  for (const p of brain.plan().proposals) {
+    if (pendingCountForAccount(p.account_id) > 0) continue;
+    enqueueProposal(p, 'enqueue');
+  }
+}
+
+setInterval(() => { try { brainTick(); } catch (e) { console.warn('[brain]', e.message); } }, 60 * 1000);
 
 // ── Serve dashboard for any unknown route ─────────────────────────────────────
 
