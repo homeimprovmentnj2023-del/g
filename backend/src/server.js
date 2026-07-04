@@ -20,6 +20,7 @@ const cors    = require('cors');
 const path    = require('path');
 const db      = require('./db');
 const ai      = require('./ai');
+const brain   = require('./brain');
 
 const app  = express();
 const PORT = process.env.PORT || 3333;
@@ -619,6 +620,25 @@ app.get('/api/analytics', (_req, res) => {
     totalCompetitors: competitors.length,
     avgCompetitorPrice,
   });
+});
+
+// ── Autonomous brain (READ-ONLY: observe + recommend, never posts) ─────────────
+// These endpoints let you watch the brain's decisions before actuation is
+// enabled. None of them enqueue a job or touch Facebook.
+app.get('/api/brain/performance', (_req, res) => res.json(brain.performance()));
+app.get('/api/brain/coverage',    (_req, res) => res.json(brain.coverage()));
+app.get('/api/brain/plan',        (_req, res) => res.json(brain.plan()));
+app.get('/api/brain/keepalive',   (_req, res) => res.json(brain.keepAlive()));
+app.get('/api/brain/actions',     (req, res) => res.json(db.getBrainActions(Number(req.query.limit) || 200)));
+
+// Mark / clear an account restriction (used by failover; also manual override).
+app.post('/api/brain/accounts/:id/restrict', (req, res) => {
+  const a = db.markAccountRestricted(Number(req.params.id), (req.body && req.body.reason) || 'manual');
+  a ? res.json(a) : res.status(404).json({ error: 'Not found' });
+});
+app.post('/api/brain/accounts/:id/clear', (req, res) => {
+  const a = db.clearAccountRestriction(Number(req.params.id));
+  a ? res.json(a) : res.status(404).json({ error: 'Not found' });
 });
 
 // ── Scheduler — enqueues publish jobs on each schedule's daily time slots ──────

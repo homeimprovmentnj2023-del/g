@@ -17,9 +17,18 @@ const now = () => Math.floor(Date.now() / 1000);
 const empty = {
   templates: [], listings: [], listing_events: [],
   competitors: [], ai_suggestions: [], post_queue: [], logs: [], schedules: [],
-  repost_history: [], debug_snapshots: [], accounts: [],
-  settings: { auto_repost: false, ai_rewrite: false },
-  counters: { templates: 0, listing_events: 0, ai_suggestions: 0, post_queue: 0, logs: 0, schedules: 0, accounts: 0 },
+  repost_history: [], debug_snapshots: [], accounts: [], brain_actions: [],
+  settings: {
+    auto_repost: false, ai_rewrite: false,
+    // Autonomous orchestrator master switch — OFF by default. When false the
+    // brain only observes and recommends; it never enqueues a post on its own.
+    autonomous: false,
+    brain_max_per_account_per_day: 8,   // hard daily cap per Facebook account
+    brain_min_gap_minutes: 25,          // min minutes between posts on one account
+    brain_cooldown_hours: 6,            // don't re-post the same template within N hours
+    brain_quiet_hours: [],              // e.g. [0,1,2,3,4,5] to pause overnight (local hours)
+  },
+  counters: { templates: 0, listing_events: 0, ai_suggestions: 0, post_queue: 0, logs: 0, schedules: 0, accounts: 0, brain_actions: 0 },
 };
 
 let data;
@@ -261,7 +270,10 @@ module.exports = {
   // ── Accounts (each = a Facebook account / Chrome profile, owns a ZIP group) ────
   createAccount: (a) => {
     const row = { id: nextId('accounts'), name: a.name || `Account ${data.counters.accounts}`,
-      zips: Array.isArray(a.zips) ? a.zips.map(String) : [], active: a.active !== false, created_at: now() };
+      zips: Array.isArray(a.zips) ? a.zips.map(String) : [], active: a.active !== false,
+      // Per-account health the brain reads to decide who may post next.
+      health: { status: 'ok', last_post_at: 0, last_block_at: 0, posts_today: 0, posts_today_date: '', blocks: 0, last_reason: '' },
+      created_at: now() };
     data.accounts.push(row);
     saveNow();
     return row;
@@ -271,9 +283,11 @@ module.exports = {
   updateAccount: (id, patch) => {
     const a = data.accounts.find(x => x.id === Number(id));
     if (!a) return null;
+    if (!a.health) a.health = { status: 'ok', last_post_at: 0, last_block_at: 0, posts_today: 0, posts_today_date: '', blocks: 0, last_reason: '' };
     if (patch.name !== undefined) a.name = patch.name;
     if (patch.zips !== undefined) a.zips = (Array.isArray(patch.zips) ? patch.zips : []).map(String);
     if (patch.active !== undefined) a.active = !!patch.active;
+    if (patch.health !== undefined) a.health = { ...a.health, ...patch.health };
     saveNow();
     return a;
   },
@@ -285,4 +299,56 @@ module.exports = {
     if (!z) return null;
     return data.accounts.find(a => a.active && (a.zips || []).some(x => String(x).includes(z))) || null;
   },
+
+  // ── Account health helpers (the brain's memory of each account) ───────────────
+  // Count a successful post: bumps today's tally (resetting at date rollover).
+  recordAccountPost: (id, dateStr) => {
+    const a = data.accounts.find(x => x.id === Number(id));
+    if (!a) return;
+    if (!a.health) a.health = { status: 'ok', posts_today: 0 };
+    if (a.health.posts_today_date !== dateStr) { a.health.posts_today = 0; a.health.posts_today_date = dateStr; }
+    a.health.posts_today += 1;
+    a.health.last_post_at = now();
+    saveNow();
+  },
+  // Mark an account restricted/blocked so the brain stops using it and fails over.
+  markAccountRestricted: (id, reason) => {
+    const a = data.accounts.find(x => x.id === Number(id));
+    if (!a) return null;
+    if (!a.health) a.health = {};
+    a.health.status = 'restricted';
+    a.health.last_block_at = now();
+    a.health.blocks = (a.health.blocks || 0) + 1;
+    a.health.last_reason = reason || '';
+    saveNow();
+    return a;
+  },
+  clearAccountRestriction: (id) => {
+    const a = data.accounts.find(x => x.id === Number(id));
+    if (!a) return null;
+    if (!a.health) a.health = {};
+    a.health.status = 'ok';
+    a.health.last_reason = '';
+    saveNow();
+    return a;
+  },
+
+  // ── Brain decision log (audit trail + learning substrate) ─────────────────────
+  recordBrainAction: (entry) => {
+    const row = {
+      id: nextId('brain_actions'),
+      kind: entry.kind || 'decision',        // decision | enqueue | keepalive | failover | skip
+      account_id: entry.account_id != null ? entry.account_id : null,
+      zip: entry.zip || null,
+      template_id: entry.template_id != null ? entry.template_id : null,
+      reason: entry.reason || '',
+      score: entry.score != null ? entry.score : null,
+      at: now(),
+    };
+    data.brain_actions.push(row);
+    if (data.brain_actions.length > 2000) data.brain_actions = data.brain_actions.slice(-2000);
+    save();
+    return row;
+  },
+  getBrainActions: (limit = 200) => [...data.brain_actions].sort((a, b) => b.id - a.id).slice(0, limit),
 };
