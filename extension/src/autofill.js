@@ -548,8 +548,27 @@ window.FBMAutofill = (() => {
     return null;
   }
 
+  // After publishing, Facebook usually lands on "your listings" (not the item
+  // page), so the new item's id isn't in the URL. Find it by matching the title
+  // to a listing card on that page, so the backend can track + replace it later.
+  function findPostedListing(title) {
+    const want = String(title || '').toLowerCase().replace(/\s+/g, ' ').trim().slice(0, 24);
+    const links = [...document.querySelectorAll('a[href*="/marketplace/item/"]')];
+    const idOf = (a) => (String(a.getAttribute('href') || '').match(/\/marketplace\/item\/(\d+)/) || [])[1] || null;
+    if (want) {
+      for (const a of links) {
+        const scope = a.closest('[role="listitem"], [role="article"], li') || a.parentElement || a;
+        const txt = (scope.textContent || '').toLowerCase().replace(/\s+/g, ' ');
+        const id = idOf(a);
+        if (id && txt.includes(want.slice(0, 16))) return { id, url: `https://www.facebook.com/marketplace/item/${id}/` };
+      }
+    }
+    for (const a of links) { const id = idOf(a); if (id) return { id, url: `https://www.facebook.com/marketplace/item/${id}/` }; }
+    return null;
+  }
+
   // ── Publish with hard-stop on block ──────────────────────────────────────────
-  async function publish() {
+  async function publish(title) {
     const startUrl = location.href;
     await waitAndAct(
       () => findClickableByText(PUBLISH_WORDS, ['button']),
@@ -571,8 +590,13 @@ window.FBMAutofill = (() => {
       // Success: URL changed to an item or "your listings" page.
       if (location.href !== startUrl && /\/marketplace\/(item|you\/selling)/.test(location.href) && Date.now() - start > 1500) {
         const m = location.href.match(/\/marketplace\/item\/(\d+)/);
-        log('publish', 'success', m ? `listing id ${m[1]}` : 'redirected to your listings');
-        return { ok: true, listingId: m ? m[1] : null, url: location.href };
+        if (m) { log('publish', 'success', `listing id ${m[1]}`); return { ok: true, listingId: m[1], url: location.href }; }
+        // Landed on "your listings" — poll for the new listing's id/url so it's trackable.
+        let found = null;
+        for (let k = 0; k < 8 && !found; k++) { found = findPostedListing(title); if (!found) await sleep(800); }
+        if (found) { log('publish', 'success', `listing id ${found.id} (from your-listings)`); return { ok: true, listingId: found.id, url: found.url }; }
+        log('publish', 'success', 'published (listing id not captured — will match on next scrape)');
+        return { ok: true, listingId: null, url: location.href };
       }
 
       // A confirmation "Publish/Post" button (often inside a dialog) — click it.
@@ -590,8 +614,11 @@ window.FBMAutofill = (() => {
     // No clear confirmation — report so the user can verify, but it may have posted.
     log('publish', 'warn', 'no confirmation detected within timeout');
     const m = location.href.match(/\/marketplace\/item\/(\d+)/);
-    return { ok: !!m, listingId: m ? m[1] : null, url: location.href,
-             error: m ? undefined : 'Clicked Publish but could not confirm the post — please check Marketplace once.' };
+    if (m) return { ok: true, listingId: m[1], url: location.href };
+    const found = findPostedListing(title);
+    if (found) { log('publish', 'success', `listing id ${found.id} (recovered after timeout)`); return { ok: true, listingId: found.id, url: found.url }; }
+    return { ok: false, listingId: null, url: location.href,
+             error: 'Clicked Publish but could not confirm the post — please check Marketplace once.' };
   }
 
   // ── Delete an existing listing (so a repost isn't rejected as a duplicate) ────
@@ -737,7 +764,7 @@ window.FBMAutofill = (() => {
       }
 
       // Step 5 — publish (publish() retries the click and hard-stops on a block)
-      const result = await publish();
+      const result = await publish(template.title);
       log('done', result.ok ? 'success' : (result.blocked ? 'block' : 'error'), result.error || 'published');
       if (result.ok) showBanner('Published successfully! ✅', 'ok');
       else showBanner(result.error || 'Could not finish publishing', 'warn');
