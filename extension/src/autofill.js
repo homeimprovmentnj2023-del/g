@@ -551,20 +551,41 @@ window.FBMAutofill = (() => {
   // After publishing, Facebook usually lands on "your listings" (not the item
   // page), so the new item's id isn't in the URL. Find it by matching the title
   // to a listing card on that page, so the backend can track + replace it later.
+  // Broad match: any anchor whose href contains /item/<digits> (covers
+  // /marketplace/item/, /item/, and query-string variants).
   function findPostedListing(title) {
     const want = String(title || '').toLowerCase().replace(/\s+/g, ' ').trim().slice(0, 24);
-    const links = [...document.querySelectorAll('a[href*="/marketplace/item/"]')];
-    const idOf = (a) => (String(a.getAttribute('href') || '').match(/\/marketplace\/item\/(\d+)/) || [])[1] || null;
+    const items = [];
+    for (const a of document.querySelectorAll('a[href]')) {
+      const m = (a.getAttribute('href') || '').match(/\/(?:marketplace\/)?item\/(\d+)/);
+      if (m) items.push({ a, id: m[1] });
+    }
     if (want) {
-      for (const a of links) {
-        const scope = a.closest('[role="listitem"], [role="article"], li') || a.parentElement || a;
+      for (const it of items) {
+        const scope = it.a.closest('[role="listitem"], [role="article"], li') || it.a.parentElement || it.a;
         const txt = (scope.textContent || '').toLowerCase().replace(/\s+/g, ' ');
-        const id = idOf(a);
-        if (id && txt.includes(want.slice(0, 16))) return { id, url: `https://www.facebook.com/marketplace/item/${id}/` };
+        if (txt.includes(want.slice(0, 16))) return { id: it.id, url: `https://www.facebook.com/marketplace/item/${it.id}/` };
       }
     }
-    for (const a of links) { const id = idOf(a); if (id) return { id, url: `https://www.facebook.com/marketplace/item/${id}/` }; }
+    if (items.length) return { id: items[0].id, url: `https://www.facebook.com/marketplace/item/${items[0].id}/` };
     return null;
+  }
+
+  // If we still can't find it, snapshot the page's links so the selector can be
+  // calibrated from the real "your listings" DOM (same pattern as the inbox).
+  async function captureSellingDebug(title) {
+    try {
+      const hrefs = [...document.querySelectorAll('a[href]')].map(a => a.getAttribute('href') || '');
+      await fetch(`${BACKEND}/api/debug`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          kind: 'mp-selling-debug', url: location.href, title,
+          anchorCount: hrefs.length,
+          itemLinks: hrefs.filter(h => /\/item\//.test(h)).slice(0, 20),
+          marketplaceLinks: hrefs.filter(h => /\/marketplace\//.test(h)).slice(0, 25),
+        }),
+      });
+    } catch (_) {}
   }
 
   // ── Publish with hard-stop on block ──────────────────────────────────────────
@@ -591,11 +612,16 @@ window.FBMAutofill = (() => {
       if (location.href !== startUrl && /\/marketplace\/(item|you\/selling)/.test(location.href) && Date.now() - start > 1500) {
         const m = location.href.match(/\/marketplace\/item\/(\d+)/);
         if (m) { log('publish', 'success', `listing id ${m[1]}`); return { ok: true, listingId: m[1], url: location.href }; }
-        // Landed on "your listings" — poll for the new listing's id/url so it's trackable.
+        // Landed on "your listings" — poll for the new listing's id/url so it's
+        // trackable. Scroll each pass to trigger Facebook's lazy list rendering.
         let found = null;
-        for (let k = 0; k < 8 && !found; k++) { found = findPostedListing(title); if (!found) await sleep(800); }
+        for (let k = 0; k < 12 && !found; k++) {
+          found = findPostedListing(title);
+          if (!found) { try { window.scrollTo(0, document.body.scrollHeight); } catch (_) {} await sleep(1000); }
+        }
         if (found) { log('publish', 'success', `listing id ${found.id} (from your-listings)`); return { ok: true, listingId: found.id, url: found.url }; }
-        log('publish', 'success', 'published (listing id not captured — will match on next scrape)');
+        await captureSellingDebug(title);
+        log('publish', 'success', 'published (listing id not captured — snapshot saved for calibration)');
         return { ok: true, listingId: null, url: location.href };
       }
 

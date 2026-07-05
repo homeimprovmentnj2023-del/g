@@ -144,11 +144,12 @@ function accountEligibility(a, cfg) {
 
 function config() {
   const s = db.getSettings();
+  const num = (v, d) => { const n = Number(v); return Number.isFinite(n) ? n : d; };  // respects 0
   return {
     autonomous: !!s.autonomous,
-    maxPerDay: Number(s.brain_max_per_account_per_day) || 8,
-    minGapMin: Number(s.brain_min_gap_minutes) || 25,
-    cooldownH: Number(s.brain_cooldown_hours) || 6,
+    maxPerDay: num(s.brain_max_per_account_per_day, 8),
+    minGapMin: num(s.brain_min_gap_minutes, 25),
+    cooldownH: num(s.brain_cooldown_hours, 6),
     quietHours: Array.isArray(s.brain_quiet_hours) ? s.brain_quiet_hours.map(Number) : [],
   };
 }
