@@ -680,6 +680,24 @@ window.FBMAutofill = (() => {
     return opts.find(o => /delete|remove|eliminar|borrar|quitar/i.test(o.textContent || '')) || null;
   }
 
+  // When we can't find a Delete control, snapshot the page so the selector (or the
+  // reason — suspended-listing notice, buyer view, not-owner) can be seen.
+  async function captureDeleteDebug() {
+    try {
+      const controls = [...document.querySelectorAll('[role="button"],[role="menuitem"],button,a[href]')]
+        .filter(el => (el.offsetWidth || el.offsetHeight))
+        .slice(0, 45)
+        .map(el => ({ tag: el.tagName.toLowerCase(), role: el.getAttribute('role') || '',
+          aria: (el.getAttribute('aria-label') || '').slice(0, 40),
+          text: (el.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 40) }));
+      await fetch(`${BACKEND}/api/debug`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ kind: 'mp-delete-debug', url: location.href,
+          bodySnippet: (document.body.innerText || '').replace(/\s+/g, ' ').slice(0, 320), controls }),
+      });
+    } catch (_) {}
+  }
+
   async function deleteListing() {
     log('delete', 'info', 'attempting to delete old listing before reposting');
     try {
@@ -699,7 +717,7 @@ window.FBMAutofill = (() => {
           || document.querySelector('[aria-label="More options" i], [aria-label="Más opciones" i], [aria-haspopup="menu"]');
         if (more) { realClick(more); await sleep(1300); del = findDeleteControl(); }
       }
-      if (!del) { log('delete', 'warn', 'no Delete control found — continuing to post anyway'); return { ok: false }; }
+      if (!del) { await captureDeleteDebug(); log('delete', 'warn', 'no Delete control found — snapshot saved for calibration'); return { ok: false, noControl: true }; }
 
       realClick(del);
       await sleep(1300);
