@@ -171,6 +171,7 @@ module.exports = {
       title: j.title, price: j.price || '', description: j.description || '',
       location: j.location || '', category: j.category || '', photos: j.photos || '[]',
       delete_url: j.delete_url || null,   // if set, delete this old listing before posting
+      delete_only: j.delete_only === true, // if true, just delete delete_url and do NOT post
       account_id: j.account_id != null ? j.account_id : null, // which FB account/profile posts it
       status: 'pending', result: null, created_at: now(), updated_at: now(),
     };

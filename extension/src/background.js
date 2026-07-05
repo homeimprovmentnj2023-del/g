@@ -109,21 +109,28 @@ async function processNextQueueJob() {
              : status === 'needs_photo' ? 'Add a Photo' : 'Action Needed',
         message: `"${job.title}": ${result.error || 'needs your attention'}`,
       });
-    } else if (result.ok) {
-      // Save the new listing to backend
-      await fetch(`${BACKEND}/api/listings`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          id:          result.listingId,
-          title:       job.title,
-          price:       job.price,
-          description: job.description,
-          status:      'active',
-          url:         result.url,
-          template_id: job.template_id,
-        }),
+    } else if (result.ok && result.deletedOnly) {
+      chrome.notifications.create(`deleted-${job.id}`, {
+        type: 'basic', iconUrl: '../icons/icon48.png',
+        title: 'Listing Deleted', message: 'Removed a suspended/old listing.',
       });
+    } else if (result.ok) {
+      // Save the new listing to backend (only when we captured its real id).
+      if (result.listingId) {
+        await fetch(`${BACKEND}/api/listings`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            id:          result.listingId,
+            title:       job.title,
+            price:       job.price,
+            description: job.description,
+            status:      'active',
+            url:         result.url,
+            template_id: job.template_id,
+          }),
+        });
+      }
 
       chrome.notifications.create(`publish-${job.id}`, {
         type: 'basic',
@@ -149,6 +156,24 @@ async function runPublishJob(job) {
 
   return new Promise(async (resolve) => {
     try {
+      // Delete-only cleanup job: open the listing, delete it, and DON'T post.
+      if (job.delete_only && job.delete_url) {
+        try {
+          const dTab = await chrome.tabs.create({ url: job.delete_url, active: true });
+          await waitForTabLoad(dTab.id, 20000);
+          await sleep(2500);
+          await chrome.scripting.executeScript({ target: { tabId: dTab.id }, files: ['src/selectors.js'] });
+          await chrome.scripting.executeScript({ target: { tabId: dTab.id }, files: ['src/autofill.js'] });
+          await sleep(500);
+          const dres = await chrome.scripting.executeScript({ target: { tabId: dTab.id }, func: async () => await window.FBMAutofill.deleteListing() });
+          await sleep(1200);
+          chrome.tabs.remove(dTab.id).catch(() => {});
+          return resolve({ ok: true, deletedOnly: true, result: dres?.[0]?.result || {} });
+        } catch (e) {
+          return resolve({ ok: false, error: 'delete failed: ' + e.message });
+        }
+      }
+
       // Step A — if this is a repost, delete the old listing first so Facebook
       // doesn't reject the new one as a duplicate (same photo/title).
       if (job.delete_url) {

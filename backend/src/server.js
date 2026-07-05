@@ -666,6 +666,24 @@ app.post('/api/brain/enqueue-now', (req, res) => {
   res.status(201).json({ enqueued: job, proposal: p });
 });
 
+// Enqueue a delete-only job: the assigned account's profile opens the listing and
+// deletes it (used to clean up suspended/old listings). Routes to Account A (1)
+// by default — deletion only works from the profile logged into the owning acct.
+app.post('/api/brain/delete-listing', (req, res) => {
+  const { listingId, url, accountId } = req.body || {};
+  let delUrl = url || null;
+  if (!delUrl && listingId != null) {
+    const l = db.getListings().find(x => String(x.id) === String(listingId));
+    if (l) delUrl = l.url;
+  }
+  if (!delUrl) return res.status(400).json({ error: 'url (or a listingId with a known url) required' });
+  const job = db.createJob({ delete_url: delUrl, delete_only: true, title: 'delete listing',
+    account_id: accountId != null ? Number(accountId) : 1 });
+  db.recordBrainAction({ kind: 'delete', account_id: job.account_id, reason: `delete-only: ${delUrl.slice(0, 60)}` });
+  db.addLog({ job_id: job.id, step: 'brain', status: 'info', detail: `delete-only job queued for ${delUrl}` });
+  res.status(201).json({ enqueued: job });
+});
+
 // ── Scheduler — enqueues publish jobs on each schedule's daily time slots ──────
 // Runs every minute. The extension's background worker then posts queued jobs
 // (one at a time, with throttling). Time slots use the machine's LOCAL time,
