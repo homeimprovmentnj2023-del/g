@@ -318,40 +318,56 @@ window.FBMAutofill = (() => {
       const bitmap = await createImageBitmap(file);
       const clamp = v => (v < 0 ? 0 : v > 255 ? 255 : v);
 
-      // Random small crop (0–2% per side) → changes dimensions & pixel hash.
-      const cx = Math.floor(bitmap.width  * (Math.random() * 0.02));
-      const cy = Math.floor(bitmap.height * (Math.random() * 0.02));
+      // Larger random crop (0–7% per side) → bigger change to the perceptual hash.
+      const cx = Math.floor(bitmap.width  * (Math.random() * 0.07));
+      const cy = Math.floor(bitmap.height * (Math.random() * 0.07));
       const w = Math.max(1, bitmap.width  - cx * 2);
       const h = Math.max(1, bitmap.height - cy * 2);
 
       const canvas = document.createElement('canvas');
       canvas.width = w; canvas.height = h;
       const ctx = canvas.getContext('2d');
+      ctx.fillStyle = '#f2f2f2';
+      ctx.fillRect(0, 0, w, h);   // fallback fill so rotation corners never show gaps
 
-      // Subtle brightness/contrast shift (±3% / ±2%).
-      const bright   = 1 + (Math.random() * 0.06 - 0.03);
-      const contrast = 1 + (Math.random() * 0.04 - 0.02);
-      ctx.filter = `brightness(${bright.toFixed(3)}) contrast(${contrast.toFixed(3)})`;
-      ctx.drawImage(bitmap, cx, cy, w, h, 0, 0, w, h);
+      // Stronger, still-natural color changes: brightness/contrast + saturation +
+      // a small hue rotation. Hue shift in particular moves the color hash.
+      const bright   = 1 + (Math.random() * 0.08 - 0.04);
+      const contrast = 1 + (Math.random() * 0.06 - 0.03);
+      const sat      = 1 + (Math.random() * 0.10 - 0.05);
+      const hue      = (Math.random() * 16 - 8).toFixed(1);   // ±8°
+      ctx.filter = `brightness(${bright.toFixed(3)}) contrast(${contrast.toFixed(3)}) saturate(${sat.toFixed(3)}) hue-rotate(${hue}deg)`;
+
+      // Slight rotation (±2.5°) + occasional horizontal mirror, drawn with 6%
+      // overscan so the rotated corners stay covered. Rotation + mirror change the
+      // perceptual hash far more than brightness alone, while still looking natural.
+      const deg = Math.random() * 5 - 2.5;
+      const mirror = Math.random() < 0.5;
+      const zoom = 1.06;
+      ctx.translate(w / 2, h / 2);
+      ctx.rotate(deg * Math.PI / 180);
+      if (mirror) ctx.scale(-1, 1);
+      ctx.drawImage(bitmap, cx, cy, w, h, -(w * zoom) / 2, -(h * zoom) / 2, w * zoom, h * zoom);
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
       ctx.filter = 'none';
 
-      // Sparse, low-amplitude noise (every ~70–200th pixel, ±3 levels).
+      // Sparse, low-amplitude noise (every ~60–180th pixel, ±4 levels).
       try {
         const imgData = ctx.getImageData(0, 0, w, h);
         const d = imgData.data;
-        const step = (70 + Math.floor(Math.random() * 130)) * 4;
+        const step = (60 + Math.floor(Math.random() * 120)) * 4;
         for (let i = 0; i < d.length; i += step) {
-          const n = (Math.random() * 6 - 3) | 0;
+          const n = (Math.random() * 8 - 4) | 0;
           d[i] = clamp(d[i] + n); d[i + 1] = clamp(d[i + 1] + n); d[i + 2] = clamp(d[i + 2] + n);
         }
         ctx.putImageData(imgData, 0, 0);
       } catch (_) { /* getImageData can fail on huge canvases — skip noise */ }
 
-      const quality = 0.82 + Math.random() * 0.14; // random re-encode quality
+      const quality = 0.80 + Math.random() * 0.16; // random re-encode quality
       const blob = await new Promise(r => canvas.toBlob(r, 'image/jpeg', quality));
       if (!blob) return file;
       const base = (file.name || 'photo').replace(/\.\w+$/, '');
-      log('images', 'info', `uniquified image (${w}x${h}, q${quality.toFixed(2)}) to avoid duplicate detection`);
+      log('images', 'info', `uniquified image (${w}x${h}, rot ${deg.toFixed(1)}°${mirror ? ' +mirror' : ''}, hue ${hue}°, q${quality.toFixed(2)})`);
       return new File([blob], `${base}-${Date.now()}.jpg`, { type: 'image/jpeg' });
     } catch (err) {
       log('images', 'warn', `could not uniquify image (${err.message}) — using original`);

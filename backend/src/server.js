@@ -724,12 +724,24 @@ function pendingCountForAccount(accountId) {
 function enqueueProposal(p, kind) {
   const tpl = db.getTemplate(p.template_id);
   if (!tpl) return null;
+  // Rotate photo order per post so repeated posts of one template don't always
+  // lead with the same image (Facebook flags reused photos as duplicates). This
+  // only helps if a template has MORE THAN ONE photo — add multiple real photos
+  // per template for it to matter; a single photo will still repeat.
+  let photos = tpl.photos || '[]';
+  try {
+    const arr = JSON.parse(photos);
+    if (Array.isArray(arr) && arr.length > 1) {
+      const i = db.countRecentReposts(tpl.id, 365 * 24 * 3600) % arr.length;
+      photos = JSON.stringify(arr.slice(i).concat(arr.slice(0, i)));
+    }
+  } catch (_) {}
   const job = db.createJob({
     template_id: tpl.id, account_id: p.account_id,
     title: tpl.title, price: tpl.price != null ? String(tpl.price) : '',
     description: tpl.description || '', location: tpl.location || '',
     category: tpl.category || '', condition: tpl.condition || '',
-    photos: tpl.photos || '[]', delete_url: p.delete_url || null,
+    photos, delete_url: p.delete_url || null,
   });
   db.addRepost(tpl.id);                                   // cooldown window
   db.recordBrainAction({ kind: kind || 'enqueue', account_id: p.account_id, zip: p.zip || null,
