@@ -758,7 +758,9 @@ function photosForJob(tpl) {
   try { own = JSON.parse(tpl.photos || '[]'); if (!Array.isArray(own)) own = []; } catch (_) {}
   const lib = libraryPhotoUrls();
   if (!lib.length) return JSON.stringify(own);
-  const idx = db.countRecentReposts(tpl.id, 365 * 24 * 3600) % lib.length;   // rotates each post
+  // Offset by template id AND repost count so DIFFERENT templates lead with
+  // different photos, and REPOSTS of one template rotate to new photos.
+  const idx = (Number(tpl.id) + db.countRecentReposts(tpl.id, 365 * 24 * 3600)) % lib.length;
   const rotated = lib.slice(idx).concat(lib.slice(0, idx));
   const set = [];
   const push = (u) => { if (u && !set.includes(u)) set.push(u); };
