@@ -457,7 +457,7 @@ async function queueJobFromTemplate(tpl, extra = {}) {
   return db.createJob({
     template_id: tpl.id, title, price: tpl.price ? String(tpl.price) : '',
     description, location: tpl.location || '', category: tpl.category || '',
-    condition: tpl.condition || '', photos: tpl.photos || '[]',
+    condition: tpl.condition || '', photos: photosForJob(tpl),
     delete_url: extra.delete_url || null,
     account_id: acct ? acct.id : null,
   });
@@ -739,21 +739,39 @@ function pendingCountForAccount(accountId) {
 
 // Build a publish job from a template for a specific account, mark a cooldown so
 // the same template isn't re-enqueued next tick, and log the decision.
+// All photo URLs in the shared library (data/photos), served over localhost.
+function libraryPhotoUrls() {
+  try {
+    return fs.readdirSync(PHOTO_DIR)
+      .filter(f => /\.(jpe?g|png|webp|gif)$/i.test(f))
+      .map(f => `http://localhost:${PORT}/photos/${f}`);
+  } catch (_) { return []; }
+}
+
+// Choose the photos for a post: LEAD with a rotating library image (so each
+// post/repost uses a DIFFERENT real picture → avoids duplicate suspensions),
+// then include the template's own photo and a few more library images as
+// FALLBACKS (if one upload fails, the extension tries the next). Falls back to
+// the template's own photo(s) when the library is empty.
+function photosForJob(tpl) {
+  let own = [];
+  try { own = JSON.parse(tpl.photos || '[]'); if (!Array.isArray(own)) own = []; } catch (_) {}
+  const lib = libraryPhotoUrls();
+  if (!lib.length) return JSON.stringify(own);
+  const idx = db.countRecentReposts(tpl.id, 365 * 24 * 3600) % lib.length;   // rotates each post
+  const rotated = lib.slice(idx).concat(lib.slice(0, idx));
+  const set = [];
+  const push = (u) => { if (u && !set.includes(u)) set.push(u); };
+  push(rotated[0]);                    // variety: a different library photo each time
+  own.forEach(push);                   // the template's own photo(s)
+  rotated.slice(1, 4).forEach(push);   // extra fallbacks for reliable upload
+  return JSON.stringify(set.slice(0, 5));
+}
+
 function enqueueProposal(p, kind) {
   const tpl = db.getTemplate(p.template_id);
   if (!tpl) return null;
-  // Rotate photo order per post so repeated posts of one template don't always
-  // lead with the same image (Facebook flags reused photos as duplicates). This
-  // only helps if a template has MORE THAN ONE photo — add multiple real photos
-  // per template for it to matter; a single photo will still repeat.
-  let photos = tpl.photos || '[]';
-  try {
-    const arr = JSON.parse(photos);
-    if (Array.isArray(arr) && arr.length > 1) {
-      const i = db.countRecentReposts(tpl.id, 365 * 24 * 3600) % arr.length;
-      photos = JSON.stringify(arr.slice(i).concat(arr.slice(0, i)));
-    }
-  } catch (_) {}
+  const photos = photosForJob(tpl);
   const job = db.createJob({
     template_id: tpl.id, account_id: p.account_id,
     title: tpl.title, price: tpl.price != null ? String(tpl.price) : '',

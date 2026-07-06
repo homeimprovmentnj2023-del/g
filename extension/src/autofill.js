@@ -376,7 +376,14 @@ window.FBMAutofill = (() => {
   }
 
   function countPhotoThumbs() {
-    return document.querySelectorAll('img[src*="scontent"], img[src^="blob:"], div[aria-label="Photo" i]').length;
+    // Broad match — the check is relative (thumbs after upload > before), so extra
+    // matches don't cause false positives, but missing the new thumb caused false
+    // "upload failed". Cover blob:/data:/scontent thumbnails and FB's media nodes.
+    return document.querySelectorAll(
+      'img[src*="scontent"], img[src^="blob:"], img[src^="data:"], ' +
+      'div[aria-label="Photo" i], [aria-label*="photo" i] img, ' +
+      '[data-visualcompletion="media-vc-image"]'
+    ).length;
   }
 
   async function uploadImages(photos) {
@@ -400,7 +407,7 @@ window.FBMAutofill = (() => {
         log('images', 'info', `uploading image ${i + 1}/${photos.length}: ${file.name}`);
 
         // Validate: a new thumbnail appears, or an error alert shows.
-        await waitFor(() => countPhotoThumbs() > before || document.querySelector('[role="alert"]'), { timeout: 15000 });
+        await waitFor(() => countPhotoThumbs() > before || document.querySelector('[role="alert"]'), { timeout: 20000 });
         const alert = document.querySelector('[role="alert"]');
         if (alert && /(photo|image|upload|foto|imagen)/i.test(alert.textContent || '')) {
           throw new Error(alert.textContent.trim());
