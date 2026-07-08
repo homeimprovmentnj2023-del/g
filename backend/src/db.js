@@ -133,7 +133,13 @@ module.exports = {
     });
     saveNow();
   },
-  getStaleListings: () => data.listings.filter(l => l.status === 'active' && l.last_checked < now() - 3600),
+  // Only MY OWN active listings that haven't been checked in an hour, capped so
+  // the status monitor never opens a storm of verify tabs. Competitor/browse
+  // listings the scraper saw are NOT mine and must never be opened/verified.
+  getStaleListings: () => data.listings
+    .filter(l => l.owned === true && l.status === 'active' && l.last_checked < now() - 3600)
+    .sort((a, b) => (a.last_checked || 0) - (b.last_checked || 0))
+    .slice(0, 5),
   getListingEvents: (id) => data.listing_events.filter(e => e.listing_id === id).sort((a, b) => b.at - a.at),
 
   // ── Competitors ──────────────────────────────────────────────────────────────

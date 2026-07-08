@@ -506,51 +506,58 @@ window.FBMAutofill = (() => {
     el.dispatchEvent(new KeyboardEvent('keyup',   { bubbles: true, key: zip ? zip.slice(-1) : 'a' }));
     await sleep(1800);
 
-    // Strategy 1 — click the best US suggestion. We ONLY post in the United
-    // States, so always prefer a US row even if a same-ZIP foreign one appears.
-    let opts = locationSuggestions();
-    if (!opts.length) { await sleep(1200); opts = locationSuggestions(); }
-    if (opts.length) {
-      const usOpts = opts.filter(o => isUSLocation(o.textContent || ''));
-      const pick =
-        (zip && usOpts.find(o => (o.textContent || '').includes(zip))) ||  // US row with the exact ZIP
-        usOpts[0] ||                                                       // any US row
-        (zip && opts.find(o => (o.textContent || '').includes(zip))) ||    // ZIP match (no US tag found)
-        opts.find(o => /,\s*[A-Z]{2}\b/.test(o.textContent || '')) ||      // "City, ST"
-        opts[0];                                                           // always something
+    // We ONLY post in the United States. Prefer a US suggestion; if none appear,
+    // re-type with an explicit "United States" hint. NEVER confirm a foreign row —
+    // fail instead, so a listing is never posted to another country (the same
+    // 5-digit ZIP exists in other countries and FB sometimes lists those first).
+    const bestUS = () => {
+      const opts = locationSuggestions();
+      const us = opts.filter(o => isUSLocation(o.textContent || ''));
+      if (!us.length) return null;
+      return (zip && us.find(o => (o.textContent || '').includes(zip))) || us[0];
+    };
+
+    let pick = bestUS();
+    if (!pick) { await sleep(1200); pick = bestUS(); }
+    if (!pick) {
+      // Push Facebook toward US results with an explicit country hint.
+      el.focus();
+      setNativeValue(el, '');
+      setNativeValue(el, `${value}, United States`);
+      el.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 's' }));
+      el.dispatchEvent(new KeyboardEvent('keyup',   { bubbles: true, key: 's' }));
+      await sleep(2000);
+      pick = bestUS();
+      if (!pick) { await sleep(1200); pick = bestUS(); }
+    }
+    if (pick) {
       const chosen = (pick.textContent || '').trim();
-      const usNote = isUSLocation(chosen) ? ' [US]' : ' [no US tag detected]';
       realClick(pick);
       if (pick.firstElementChild) realClick(pick.firstElementChild);
       await sleep(900);
-      if (!locationSuggestions().length) {
-        log('location', 'success', `selected "${chosen}"${usNote}`);
-        return true;
-      }
-      log('location', 'retry', `clicked "${chosen}" but dropdown still open — trying keyboard`);
-    }
-
-    // Strategy 2 — keyboard: step through suggestions and pick the first US one.
-    // Each ArrowDown highlights the next row; we Enter once we're on a US row.
-    el.focus();
-    const n = Math.max(1, opts.length);
-    for (let i = 0; i < n; i++) {
-      el.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'ArrowDown', keyCode: 40, which: 40 }));
-      el.dispatchEvent(new KeyboardEvent('keyup',   { bubbles: true, key: 'ArrowDown', keyCode: 40, which: 40 }));
-      await sleep(350);
-      // If the currently highlighted/aria-selected row is US, select it.
-      const active = document.querySelector('[aria-selected="true"], [aria-activedescendant], .a11y-active') ;
-      if (active && isUSLocation(active.textContent || '')) break;
-    }
-    el.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'Enter', keyCode: 13, which: 13 }));
-    el.dispatchEvent(new KeyboardEvent('keyup',   { bubbles: true, key: 'Enter', keyCode: 13, which: 13 }));
-    await sleep(800);
-    if (!locationSuggestions().length) {
-      log('location', 'success', `selected a suggestion via keyboard for "${value}"`);
+      log('location', 'success', `selected US location "${chosen}"`);
       return true;
     }
 
-    log('location', 'warn', `typed "${value}" but could not lock in a US suggestion`);
+    // Keyboard fallback — step through rows and Enter ONLY when the highlighted
+    // row is a US location; never confirm a foreign one.
+    el.focus();
+    const rows = locationSuggestions();
+    for (let i = 0; i < Math.max(1, rows.length); i++) {
+      el.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'ArrowDown', keyCode: 40, which: 40 }));
+      el.dispatchEvent(new KeyboardEvent('keyup',   { bubbles: true, key: 'ArrowDown', keyCode: 40, which: 40 }));
+      await sleep(350);
+      const active = document.querySelector('[aria-selected="true"], .a11y-active');
+      if (active && isUSLocation(active.textContent || '')) {
+        el.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'Enter', keyCode: 13, which: 13 }));
+        el.dispatchEvent(new KeyboardEvent('keyup',   { bubbles: true, key: 'Enter', keyCode: 13, which: 13 }));
+        await sleep(800);
+        if (!locationSuggestions().length) { log('location', 'success', `selected US location via keyboard for "${value}"`); return true; }
+        break;
+      }
+    }
+
+    log('location', 'warn', `no US location found for "${value}" — did NOT select a foreign one`);
     return false;
   }
 
