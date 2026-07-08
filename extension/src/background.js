@@ -10,15 +10,31 @@ let publishTabId = null; // track the tab we opened for publishing
 chrome.runtime.onInstalled.addListener(() => {
   chrome.alarms.create('checkListings', { periodInMinutes: CHECK_INTERVAL_MINUTES });
   chrome.alarms.create('pollQueue',     { periodInMinutes: QUEUE_POLL_SECONDS / 60 });
+  chrome.alarms.create('heartbeat',     { periodInMinutes: 3 });
   console.log('[FBM] Installed. Monitoring every', CHECK_INTERVAL_MINUTES, 'min. Queue polled every', QUEUE_POLL_SECONDS, 's.');
 });
+// Also (re)create alarms whenever the service worker starts, so a reloaded
+// extension always has them even without an explicit install event.
+chrome.alarms.create('heartbeat', { periodInMinutes: 3 });
 
 // ── Alarms ────────────────────────────────────────────────────────────────────
 
 chrome.alarms.onAlarm.addListener(async alarm => {
   if (alarm.name === 'checkListings') await checkStaleListings();
   if (alarm.name === 'pollQueue')     await processNextQueueJob();
+  if (alarm.name === 'heartbeat')     await sendHeartbeat();
 });
+
+// Tell the backend this profile is alive (so it can alert if a profile goes dark).
+async function sendHeartbeat() {
+  try {
+    const { fbmAccountId } = await chrome.storage.local.get('fbmAccountId');
+    await fetch(`${BACKEND}/api/heartbeat`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ accountId: fbmAccountId || null }),
+    });
+  } catch (_) { /* backend down/unreachable — nothing to do here */ }
+}
 
 // ── Listing Monitor ───────────────────────────────────────────────────────────
 

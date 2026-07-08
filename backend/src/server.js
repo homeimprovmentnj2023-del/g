@@ -689,6 +689,66 @@ app.post('/api/brain/delete-listing', (req, res) => {
 // (one at a time, with throttling). Time slots use the machine's LOCAL time,
 // which is the user's time since the backend runs on their PC.
 
+// ── Alerting (Telegram) + down-detector ───────────────────────────────────────
+// Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in backend/.env to receive alerts.
+// Without them, alerts are logged only (no-op delivery).
+const TG_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '';
+const TG_CHAT  = process.env.TELEGRAM_CHAT_ID || '';
+const alertLog = new Map();          // key → last-sent ms (dedup)
+const heartbeats = new Map();        // accountId → { at, name }
+
+async function sendTelegram(text) {
+  if (!TG_TOKEN || !TG_CHAT) return false;
+  try {
+    await fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendMessage`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: TG_CHAT, text, disable_web_page_preview: true }),
+    });
+    return true;
+  } catch (e) { console.warn('[alert] telegram send failed:', e.message); return false; }
+}
+// Fire an alert at most once per cooldown window (minutes) per key.
+function alertOnce(key, text, cooldownMin = 30) {
+  if (Date.now() - (alertLog.get(key) || 0) < cooldownMin * 60000) return;
+  alertLog.set(key, Date.now());
+  db.addLog({ step: 'alert', status: 'warn', detail: text });
+  sendTelegram('⚠️ Marketplace bot: ' + text);
+}
+
+// Each Chrome profile pings this so the backend knows it's alive.
+app.post('/api/heartbeat', (req, res) => {
+  const id = req.body && req.body.accountId;
+  if (id != null && id !== '') {
+    const a = db.getAccount(Number(id));
+    heartbeats.set(String(id), { at: Date.now(), name: a ? a.name : `Account ${id}` });
+  }
+  res.json({ ok: true });
+});
+
+// Verify the Telegram config end-to-end.
+app.post('/api/alert/test', async (req, res) => {
+  if (!TG_TOKEN || !TG_CHAT) return res.status(400).json({ error: 'Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in backend/.env, then restart.' });
+  const ok = await sendTelegram('✅ Test alert from your Marketplace bot — alerts are working.');
+  ok ? res.json({ ok: true }) : res.status(502).json({ error: 'Telegram send failed — check the token / chat id.' });
+});
+
+// Every 2 min: alert on a profile that went silent, or an account Facebook restricted.
+setInterval(() => {
+  try {
+    const now = Date.now();
+    for (const [id, hb] of heartbeats) {
+      if (now - hb.at > 15 * 60000) {
+        alertOnce(`silent-${id}`, `${hb.name}'s browser stopped reporting (~${Math.round((now - hb.at) / 60000)} min ago). Is that Chrome profile open? Its posting & chatbot are paused until it is.`, 60);
+      }
+    }
+    for (const a of db.getAccounts()) {
+      if (a.health && a.health.status === 'restricted') {
+        alertOnce(`restricted-${a.id}`, `${a.name} was restricted by Facebook and is excluded from posting (reason: ${a.health.last_reason || 'a block'}). Check it and clear the restriction when resolved.`, 240);
+      }
+    }
+  } catch (e) { console.warn('[alert] monitor', e.message); }
+}, 2 * 60 * 1000);
+
 function pad(n) { return String(n).padStart(2, '0'); }
 
 async function tickScheduler() {

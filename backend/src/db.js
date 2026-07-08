@@ -32,26 +32,36 @@ const empty = {
   counters: { templates: 0, listing_events: 0, ai_suggestions: 0, post_queue: 0, logs: 0, schedules: 0, accounts: 0, brain_actions: 0 },
 };
 
+const BAK_FILE = DATA_FILE + '.bak';
 let data;
+function loadFrom(file) { const d = JSON.parse(fs.readFileSync(file, 'utf8')); for (const k of Object.keys(empty)) if (!(k in d)) d[k] = empty[k]; return d; }
 try {
-  data = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
-  for (const k of Object.keys(empty)) if (!(k in data)) data[k] = empty[k];
+  data = loadFrom(DATA_FILE);
 } catch (_) {
-  data = JSON.parse(JSON.stringify(empty));
+  // Main file missing/corrupt — recover from the last good backup before giving up.
+  try { data = loadFrom(BAK_FILE); console.warn('[db] recovered from', BAK_FILE); }
+  catch (_2) { data = JSON.parse(JSON.stringify(empty)); }
+}
+
+// Atomic write: serialize to a temp file, keep a .bak of the last good copy, then
+// rename temp → main (rename is atomic on the same volume). A crash mid-write can
+// never leave a half-written/corrupt fbm.json.
+function writeAtomic() {
+  const tmp = DATA_FILE + '.tmp';
+  fs.writeFileSync(tmp, JSON.stringify(data, null, 2));
+  try { if (fs.existsSync(DATA_FILE)) fs.copyFileSync(DATA_FILE, BAK_FILE); } catch (_) {}
+  fs.renameSync(tmp, DATA_FILE);
 }
 
 let saveTimer = null;
 function save() {
   // Debounce writes so rapid bulk inserts don't thrash the disk.
   if (saveTimer) return;
-  saveTimer = setTimeout(() => {
-    saveTimer = null;
-    fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
-  }, 50);
+  saveTimer = setTimeout(() => { saveTimer = null; writeAtomic(); }, 50);
 }
 function saveNow() {
   if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
-  fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
+  writeAtomic();
 }
 
 const nextId = (table) => ++data.counters[table];
