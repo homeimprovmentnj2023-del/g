@@ -584,14 +584,17 @@ window.FBMAutofill = (() => {
       const m = (a.getAttribute('href') || '').match(/\/(?:marketplace\/)?item\/(\d+)/);
       if (m) items.push({ a, id: m[1] });
     }
+    // Match by TITLE only. Do NOT fall back to "first item on the page" — on rapid
+    // back-to-back posts that first item is a PREVIOUS listing, which assigns a
+    // wrong id and merges records. Better to return null (the status monitor will
+    // pick the listing up on its next scan) than a confidently-wrong id.
     if (want) {
       for (const it of items) {
         const scope = it.a.closest('[role="listitem"], [role="article"], li') || it.a.parentElement || it.a;
         const txt = (scope.textContent || '').toLowerCase().replace(/\s+/g, ' ');
-        if (txt.includes(want.slice(0, 16))) return { id: it.id, url: `https://www.facebook.com/marketplace/item/${it.id}/` };
+        if (txt.includes(want.slice(0, 18))) return { id: it.id, url: `https://www.facebook.com/marketplace/item/${it.id}/` };
       }
     }
-    if (items.length) return { id: items[0].id, url: `https://www.facebook.com/marketplace/item/${items[0].id}/` };
     return null;
   }
 
