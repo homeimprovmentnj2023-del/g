@@ -28,6 +28,30 @@ const median = (xs) => {
 };
 const INACTIVE = new Set(['removed', 'expired', 'pending', 'sold', 'attention']);
 
+// Our posted listings carry the TEMPLATE's title, so a listing scraped without a
+// template_id can still be mapped back to its ZIP by matching the title.
+const normTitle = (s) => String(s || '').toLowerCase().replace(/\s+/g, ' ').trim();
+function titleZipMap() {
+  const m = {};
+  for (const t of db.getTemplates()) { const z = zipOf(t.location); if (z) m[normTitle(t.title)] = z; }
+  return m;
+}
+
+// ZIPs the system actually posted to (a 'done' job) within the last N hours — via
+// ANY path (brain or manual). Used to avoid re-posting a ZIP even when coverage
+// tracking is incomplete (e.g. a listing that never got recorded), which was
+// causing duplicate posting into ZIPs that already have a live listing.
+function recentlyPostedZips(scored, hours) {
+  const cutoff = nowS() - hours * HOUR;
+  const set = new Set();
+  for (const j of db.getJobs()) {
+    if (j.status !== 'done' || (j.updated_at || 0) < cutoff) continue;
+    const t = j.template_id != null ? scored[j.template_id] : null;
+    if (t && t.zip) set.add(t.zip);
+  }
+  return set;
+}
+
 // ── Performance: per-template longevity + removal rate → a 0-100 score ─────────
 function templateScores() {
   const templates = db.getTemplates();
@@ -107,10 +131,11 @@ function coverage() {
   const scored = templateScores();
   const accounts = db.getAccounts();
   const liveZips = new Set();
+  const titleZip = titleZipMap();
   for (const l of db.getListings()) {
     if (l.status !== 'active') continue;
     const t = l.template_id != null ? scored[l.template_id] : null;
-    const z = (t && t.zip) || zipOf(l.area) || zipOf(l.title);
+    const z = (t && t.zip) || titleZip[normTitle(l.title)] || zipOf(l.area) || zipOf(l.title);
     if (z) liveZips.add(z);
   }
   const cells = [];
@@ -150,6 +175,7 @@ function config() {
     maxPerDay: num(s.brain_max_per_account_per_day, 8),
     minGapMin: num(s.brain_min_gap_minutes, 25),
     cooldownH: num(s.brain_cooldown_hours, 6),
+    zipCooldownH: num(s.brain_zip_cooldown_hours, 20),   // don't re-post a ZIP within N hours
     quietHours: Array.isArray(s.brain_quiet_hours) ? s.brain_quiet_hours.map(Number) : [],
   };
 }
@@ -163,6 +189,10 @@ function plan() {
   const accounts = Object.values(accountStats());
   const cov = coverage();
   const gapZips = new Set(cov.cells.filter((c) => c.gap).map((c) => c.zip));
+  // Belt-and-suspenders against duplicate posting: never re-post a ZIP we posted
+  // to within zipCooldownH, even if coverage thinks it's a gap (tracking can miss
+  // listings). Bounds each ZIP to roughly one post per cooldown window.
+  const postedZips = recentlyPostedZips(scored, cfg.zipCooldownH);
 
   const proposals = [];
   const eligibility = [];
@@ -175,6 +205,7 @@ function plan() {
     const zips = a.zips.map((z) => z.match(/\d{5}/)?.[0] || z);
     const ordered = [...zips].sort((x, y) => (gapZips.has(y) ? 1 : 0) - (gapZips.has(x) ? 1 : 0));
     for (const zip of ordered) {
+      if (postedZips.has(zip)) continue;   // posted here recently — don't duplicate
       const pool = templatesForZip(zip, scored)
         .filter((t) => db.countRecentReposts(t.id, cfg.cooldownH * HOUR) === 0)
         .sort((x, y) => y.score - x.score);

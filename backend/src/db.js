@@ -26,6 +26,7 @@ const empty = {
     brain_max_per_account_per_day: 8,   // hard daily cap per Facebook account
     brain_min_gap_minutes: 25,          // min minutes between posts on one account
     brain_cooldown_hours: 6,            // don't re-post the same template within N hours
+    brain_zip_cooldown_hours: 20,       // don't re-post the same ZIP within N hours (anti-duplicate)
     brain_quiet_hours: [],              // e.g. [0,1,2,3,4,5] to pause overnight (local hours)
   },
   counters: { templates: 0, listing_events: 0, ai_suggestions: 0, post_queue: 0, logs: 0, schedules: 0, accounts: 0, brain_actions: 0 },
