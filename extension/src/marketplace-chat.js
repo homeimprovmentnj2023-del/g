@@ -159,10 +159,21 @@
     document.querySelectorAll('[aria-label]').forEach(el => {
       const a = el.getAttribute('aria-label') || '';
       if (!/\bmessage\b/i.test(a)) return;
-      const m = a.match(/\bby\s+(.+?):\s*([\s\S]+?)\s*$/i);   // "…by <Sender>: <text>"
-      if (!m) return;
       if (seenLabels.has(a)) return; seenLabels.add(a);
-      out.push({ el, sender: m[1].trim(), text: m[2].trim(), raw: a, bot: !!(el.dataset && el.dataset.fbmBot === '1') });
+      const bot = !!(el.dataset && el.dataset.fbmBot === '1');
+      const m = a.match(/\bby\s+(.+?):\s*([\s\S]+?)\s*$/i);   // "…by <Sender>: <text>"
+      if (m && m[2].trim()) {
+        out.push({ el, sender: m[1].trim(), text: m[2].trim(), raw: a, bot });
+        return;
+      }
+      // Media message (photo/attachment/sticker/gif/video): no text after the
+      // colon, or the label names an attachment. Treat as a "[photo]" inbound so
+      // the bot still replies ("thanks for the picture — we can work with that").
+      const sender = (a.match(/\bby\s+(.+?)\s*:?\s*$/i) || [])[1];
+      const isMedia = /\b(photo|image|picture|attachment|file|sticker|gif|video|voice|clip|audio)\b/i.test(a);
+      if (sender && isMedia) {
+        out.push({ el, sender: sender.trim(), text: '[Customer sent a photo]', raw: a, media: true, bot });
+      }
     });
     return out;
   }
@@ -370,6 +381,20 @@
     return bold;
   }
 
+  // A conversation NEEDS a reply if the buyer had the last word. Facebook shows a
+  // "You:" / "You sent…" prefix on the row preview when WE sent the last message,
+  // so the absence of that (on a real conversation row) means the customer's
+  // message is newest → open it. This is far more reliable than bold/blue-dot
+  // unread styling (which Facebook renders inconsistently), so multi-chat threads
+  // are detected even when FB doesn't visibly mark the row unread.
+  function rowNeedsReply(row) {
+    const txt = (row.textContent || '').replace(/\s+/g, ' ').trim();
+    if (!txt) return false;
+    if (/(^|\s|·)(you|t[úu]):\s|\byou sent\b|\byou replied\b|\byou reacted\b|\benviaste\b|\bhas enviado\b|\bt[úu] enviaste\b/i.test(txt)) return false;
+    // Must still look like a conversation (name + a message preview).
+    return txt.length > 3;
+  }
+
   // Compact description of a candidate row (for calibration diagnostics).
   function rowInfo(r) {
     const hrefs = [...(r.querySelectorAll ? r.querySelectorAll('a[href]') : [])].map(a => a.getAttribute('href') || '');
@@ -431,12 +456,14 @@
   // Build the queue of thread keys that currently need a reply (unread rows).
   function refreshQueue() {
     const rows = conversationRows();
-    const unread = rows.filter(rowIsUnread);
+    // Queue anything that looks unread OR whose last message isn't ours — the
+    // latter catches new messages in other chats even when FB doesn't bold them.
+    const unread = rows.filter(r => rowIsUnread(r) || rowNeedsReply(r));
     for (const row of unread) {
       const k = rowKey(row);
       if (!k) continue;
       const opened = threadState.get(k);
-      if (opened && Date.now() - opened < 5000) continue;      // just opened → let FB mark read
+      if (opened && Date.now() - opened < 15000) continue;     // just opened → let FB update the row
       if (!messageQueue.includes(k)) { messageQueue.push(k); blog('queued', k, 'queueLen=', messageQueue.length); }
     }
     return {
@@ -456,7 +483,7 @@
       const k = messageQueue[i];
       let row = null;
       for (const r of conversationRows()) { if (rowKey(r) === k) { row = r; break; } }
-      if (!row || !rowIsUnread(row)) { messageQueue.splice(i, 1); i--; continue; }  // gone/read → drop
+      if (!row || (!rowIsUnread(row) && !rowNeedsReply(row))) { messageQueue.splice(i, 1); i--; continue; }  // gone/answered → drop
       threadState.set(k, Date.now());
       messageQueue.splice(i, 1);                 // remove; will re-queue if still unread later
       blog('→ open', k, 'queueLen=', messageQueue.length);
