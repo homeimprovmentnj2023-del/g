@@ -21,6 +21,7 @@ const path    = require('path');
 const db      = require('./db');
 const ai      = require('./ai');
 const brain   = require('./brain');
+const sanitize = require('./sanitize');
 
 const app  = express();
 const PORT = process.env.PORT || 3333;
@@ -452,6 +453,12 @@ async function queueJobFromTemplate(tpl, extra = {}) {
       db.addLog({ step: 'ai-rewrite', status: 'info', detail: `Fresh wording generated for "${tpl.title}"` });
     } catch (_) { /* fall back to template text */ }
   }
+  // Product-frame + vary the copy (unless AI already rewrote it, or it's disabled).
+  if (db.getSettings().product_framing !== false) {
+    const seed = db.countRecentReposts(tpl.id, 365 * 24 * 3600);
+    const copy = sanitize.productize(title, description, seed);
+    title = copy.title; description = copy.description;
+  }
   // Route the job to the account that owns this ZIP (if multi-account is set up).
   const acct = db.findAccountForZip(tpl.location);
   return db.createJob({
@@ -866,10 +873,16 @@ function enqueueProposal(p, kind) {
   const tpl = db.getTemplate(p.template_id);
   if (!tpl) return null;
   const photos = photosForJob(tpl);
+  // Product-frame + vary the copy per post so it reads as an item for sale (not a
+  // service ad) and no two listings are identical. Seed rotates by post count.
+  const seed = db.countRecentReposts(tpl.id, 365 * 24 * 3600);
+  const copy = db.getSettings().product_framing !== false
+    ? sanitize.productize(tpl.title, tpl.description || '', seed)
+    : { title: tpl.title, description: tpl.description || '' };
   const job = db.createJob({
     template_id: tpl.id, account_id: p.account_id,
-    title: tpl.title, price: tpl.price != null ? String(tpl.price) : '',
-    description: tpl.description || '', location: tpl.location || '',
+    title: copy.title, price: tpl.price != null ? String(tpl.price) : '',
+    description: copy.description, location: tpl.location || '',
     category: tpl.category || '', condition: tpl.condition || '',
     photos, delete_url: p.delete_url || null,
   });
