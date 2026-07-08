@@ -699,33 +699,56 @@ app.post('/api/brain/delete-listing', (req, res) => {
 // ── Listing sync (from the extension's background "Your Listings" scan) ────────
 // Match a scraped listing to its source template by title (our posts use the
 // template's title verbatim), so coverage + keep-alive know what's actually live.
+const normT = (s) => String(s || '').toLowerCase().replace(/\s+/g, ' ').trim();
+// Match a scraped listing to its source template. Because posted titles are now
+// product-framed (differ from the template title), match against the actual
+// POSTED JOB titles first (they carry template_id), then fall back to template
+// titles for anything posted before product-framing.
 function matchTemplateByTitle(title) {
-  const norm = (s) => String(s || '').toLowerCase().replace(/\s+/g, ' ').trim();
-  const want = norm(title);
+  const want = normT(title);
   if (!want) return null;
+  const job = db.getJobs().find((j) => j.template_id != null && normT(j.title) === want)
+           || db.getJobs().find((j) => { const n = normT(j.title); return j.template_id != null && n.length > 6 && (want.includes(n) || n.includes(want)); });
+  if (job) { const t = db.getTemplate(job.template_id); if (t) return t; }
   const tpls = db.getTemplates();
-  return tpls.find((t) => norm(t.title) === want)
-      || tpls.find((t) => { const n = norm(t.title); return n.length > 8 && (want.includes(n) || n.includes(want.slice(0, 18))); })
+  return tpls.find((t) => normT(t.title) === want)
+      || tpls.find((t) => { const n = normT(t.title); return n.length > 8 && (want.includes(n) || n.includes(want.slice(0, 18))); })
       || null;
 }
 
 app.post('/api/listings/sync', (req, res) => {
   const { accountId, cards } = req.body || {};
   if (!Array.isArray(cards)) return res.status(400).json({ error: 'cards[] required' });
+  const acctId = accountId != null ? Number(accountId) : null;
   let matched = 0;
+  const seenIds = new Set();
   for (const c of cards) {
     if (!c || !c.id) continue;
+    seenIds.add(String(c.id));
     const tpl = matchTemplateByTitle(c.title);
     if (tpl) matched++;
     db.upsertListing({
       id: String(c.id), title: c.title || '', price: c.price || '',
       url: c.url || '', status: c.status || 'active', owned: true, checked: true,
       template_id: tpl ? tpl.id : undefined,
-      account_id: accountId != null ? Number(accountId) : undefined,
+      account_id: acctId != null ? acctId : undefined,
     });
   }
-  db.addLog({ step: 'sync', status: 'info', detail: `Account ${accountId}: synced ${cards.length} listings (${matched} matched to templates)` });
-  res.json({ ok: true, synced: cards.length, matched });
+  // Reconcile: a listing tagged to this account that's active in our DB but NOT on
+  // the account's Your Listings page (and older than an hour) is gone/suspended →
+  // mark inactive so keep-alive reposts it. Only when the scrape returned cards.
+  let closed = 0;
+  if (acctId != null && cards.length) {
+    const nowS = Math.floor(Date.now() / 1000);
+    for (const l of db.getListings()) {
+      if (String(l.account_id) !== String(acctId) || l.status !== 'active') continue;
+      if (seenIds.has(String(l.id)) || (nowS - (l.first_seen || 0)) < 3600) continue;
+      db.updateListingStatus(l.id, 'inactive');
+      closed++;
+    }
+  }
+  db.addLog({ step: 'sync', status: 'info', detail: `Account ${accountId}: synced ${cards.length} (${matched} matched, ${closed} marked inactive)` });
+  res.json({ ok: true, synced: cards.length, matched, closed });
 });
 
 // ── Alerting (Telegram) + down-detector ───────────────────────────────────────

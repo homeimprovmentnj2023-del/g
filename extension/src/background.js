@@ -177,6 +177,7 @@ async function processNextQueueJob() {
             status:      'active',
             url:         result.url,
             template_id: job.template_id,
+            account_id:  job.account_id,   // so the sync reconciler can track/replace it
           }),
         });
       }
