@@ -689,6 +689,38 @@ app.post('/api/brain/delete-listing', (req, res) => {
 // (one at a time, with throttling). Time slots use the machine's LOCAL time,
 // which is the user's time since the backend runs on their PC.
 
+// ── Listing sync (from the extension's background "Your Listings" scan) ────────
+// Match a scraped listing to its source template by title (our posts use the
+// template's title verbatim), so coverage + keep-alive know what's actually live.
+function matchTemplateByTitle(title) {
+  const norm = (s) => String(s || '').toLowerCase().replace(/\s+/g, ' ').trim();
+  const want = norm(title);
+  if (!want) return null;
+  const tpls = db.getTemplates();
+  return tpls.find((t) => norm(t.title) === want)
+      || tpls.find((t) => { const n = norm(t.title); return n.length > 8 && (want.includes(n) || n.includes(want.slice(0, 18))); })
+      || null;
+}
+
+app.post('/api/listings/sync', (req, res) => {
+  const { accountId, cards } = req.body || {};
+  if (!Array.isArray(cards)) return res.status(400).json({ error: 'cards[] required' });
+  let matched = 0;
+  for (const c of cards) {
+    if (!c || !c.id) continue;
+    const tpl = matchTemplateByTitle(c.title);
+    if (tpl) matched++;
+    db.upsertListing({
+      id: String(c.id), title: c.title || '', price: c.price || '',
+      url: c.url || '', status: c.status || 'active', owned: true, checked: true,
+      template_id: tpl ? tpl.id : undefined,
+      account_id: accountId != null ? Number(accountId) : undefined,
+    });
+  }
+  db.addLog({ step: 'sync', status: 'info', detail: `Account ${accountId}: synced ${cards.length} listings (${matched} matched to templates)` });
+  res.json({ ok: true, synced: cards.length, matched });
+});
+
 // ── Alerting (Telegram) + down-detector ───────────────────────────────────────
 // Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in backend/.env to receive alerts.
 // Without them, alerts are logged only (no-op delivery).

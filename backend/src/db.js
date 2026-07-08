@@ -114,13 +114,16 @@ module.exports = {
       existing.status    = l.status || existing.status;
       if (l.description) existing.description = l.description; // keep details for republish
       if (l.template_id != null) existing.template_id = l.template_id; // keep source template
+      if (l.account_id != null) existing.account_id = l.account_id;    // which account owns it
       if (l.owned != null) existing.owned = !!l.owned;        // only your own listings
+      if (l.checked) existing.last_checked = now();           // a fresh scrape counts as a check
       existing.last_seen = now();
     } else {
       data.listings.push({
         id: l.id, title: l.title || '', price: l.price || '',
         description: l.description || '', status: l.status || 'active',
         url: l.url || '', area: l.area || null, template_id: l.template_id || null,
+        account_id: l.account_id != null ? l.account_id : null,
         owned: l.owned === true,
         first_seen: now(), last_seen: now(), last_checked: now(),
       });

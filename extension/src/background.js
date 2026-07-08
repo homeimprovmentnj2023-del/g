@@ -11,11 +11,13 @@ chrome.runtime.onInstalled.addListener(() => {
   chrome.alarms.create('checkListings', { periodInMinutes: CHECK_INTERVAL_MINUTES });
   chrome.alarms.create('pollQueue',     { periodInMinutes: QUEUE_POLL_SECONDS / 60 });
   chrome.alarms.create('heartbeat',     { periodInMinutes: 3 });
+  chrome.alarms.create('syncListings',  { delayInMinutes: 2, periodInMinutes: 60 });
   console.log('[FBM] Installed. Monitoring every', CHECK_INTERVAL_MINUTES, 'min. Queue polled every', QUEUE_POLL_SECONDS, 's.');
 });
 // Also (re)create alarms whenever the service worker starts, so a reloaded
 // extension always has them even without an explicit install event.
 chrome.alarms.create('heartbeat', { periodInMinutes: 3 });
+chrome.alarms.create('syncListings', { delayInMinutes: 2, periodInMinutes: 60 });
 
 // ── Alarms ────────────────────────────────────────────────────────────────────
 
@@ -23,7 +25,38 @@ chrome.alarms.onAlarm.addListener(async alarm => {
   if (alarm.name === 'checkListings') await checkStaleListings();
   if (alarm.name === 'pollQueue')     await processNextQueueJob();
   if (alarm.name === 'heartbeat')     await sendHeartbeat();
+  if (alarm.name === 'syncListings')  await syncListings();
 });
+
+// Open this profile's "Your Listings" page, scrape every listing (id/title/status),
+// and sync to the backend so coverage + keep-alive know what's actually live.
+async function syncListings() {
+  if (publishTabId !== null) return;            // don't interfere with a publish
+  const { fbmAccountId } = await chrome.storage.local.get('fbmAccountId');
+  if (!fbmAccountId) return;                     // only for a profile bound to an account
+  let tab;
+  try {
+    tab = await chrome.tabs.create({ url: 'https://www.facebook.com/marketplace/you/selling', active: false });
+    await waitForTabLoad(tab.id, 20000);
+    await sleep(3000);
+    await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['src/selectors.js', 'src/scraper.js'] });
+    const scraped = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: async () => {
+        for (let i = 0; i < 4; i++) { window.scrollTo(0, document.body.scrollHeight); await new Promise(r => setTimeout(r, 900)); }
+        try { return window.FBMScraper.scrapeListingCards(); } catch (_) { return []; }
+      },
+    });
+    const cards = scraped?.[0]?.result || [];
+    if (cards.length) {
+      await fetch(`${BACKEND}/api/listings/sync`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ accountId: fbmAccountId, cards }),
+      }).catch(() => {});
+    }
+  } catch (_) { /* best effort */ }
+  finally { if (tab) chrome.tabs.remove(tab.id).catch(() => {}); }
+}
 
 // Tell the backend this profile is alive (so it can alert if a profile goes dark).
 async function sendHeartbeat() {
