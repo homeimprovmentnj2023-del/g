@@ -25,6 +25,21 @@
 
   const BACKEND = 'http://localhost:3333';
 
+  // Call the backend THROUGH the background service worker, which can always
+  // reach localhost — some Chrome profiles' page context can't fetch localhost
+  // directly (CSP/permission), which broke the relay with a false "backend
+  // offline". Returns { ok, status, data, error }.
+  function bgFetch(path, { method = 'GET', body = null, timeoutMs = 35000 } = {}) {
+    return new Promise((resolve) => {
+      try {
+        chrome.runtime.sendMessage({ type: 'BG_FETCH', path, method, body, timeoutMs }, (resp) => {
+          if (chrome.runtime.lastError) { resolve({ ok: false, status: 0, error: chrome.runtime.lastError.message }); return; }
+          resolve(resp || { ok: false, status: 0, error: 'no response' });
+        });
+      } catch (e) { resolve({ ok: false, status: 0, error: e.message }); }
+    });
+  }
+
   const CONFIG = {
     // FULLY AUTOMATED: the bot types AND sends the reply with no human action.
     // Set chrome.storage key `mpAutoSend` to false if you ever want to switch to
@@ -179,14 +194,11 @@
       _diagKey = key; _diagAt = Date.now();
       let inbox = null;
       try { const rs = conversationRows(); inbox = { rows: rs.length, unread: rs.filter(rowIsUnread).length }; } catch (_) {}
-      fetch(`${BACKEND}/api/debug`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          kind: 'mp-bridge-diag', url: location.href, conversation: info, inbox,
-          messages: msgs.slice(-8).map(m => ({ sender: m.sender, text: m.text.slice(0, 80), bot: m.bot, raw: m.raw })),
-          ...(extra || {}),
-        }),
-      }).catch(() => {});
+      bgFetch('/api/debug', { method: 'POST', body: {
+        kind: 'mp-bridge-diag', url: location.href, conversation: info, inbox,
+        messages: msgs.slice(-8).map(m => ({ sender: m.sender, text: m.text.slice(0, 80), bot: m.bot, raw: m.raw })),
+        ...(extra || {}),
+      } });
     } catch (_) {}
   }
 
@@ -243,33 +255,20 @@
     };
 
     let reply;
-    const ctrl = new AbortController();
-    const ft = setTimeout(() => ctrl.abort(), CONFIG.fetchTimeoutMs);
-    try {
-      setStatus('busy', 'Asking chatbot…');
-      const res = await fetch(`${BACKEND}/api/marketplace/incoming`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-        signal: ctrl.signal,                    // hard timeout so a stall can't hang the loop
-      });
-      const data = await res.json().catch(() => null);
-      if (!res.ok) {
-        console.warn('[FBM bridge] backend error', res.status, data);
-        setStatus('err', `Backend ${res.status} — see dashboard Logs`);
-        seen.delete(key);                       // allow a retry on the next tick
-        return false;
-      }
-      reply = data && (data.reply || data.text || data.message);
-    } catch (err) {
-      const timedOut = err && err.name === 'AbortError';
-      console.warn('[FBM bridge] backend request failed:', err && err.message);
-      setStatus('err', timedOut ? 'Backend slow/timeout — will retry' : 'Backend offline — run start.bat');
+    setStatus('busy', 'Asking chatbot…');
+    // Routed through the background worker (see bgFetch) so it works even where
+    // the page can't reach localhost. The worker enforces the timeout.
+    const res = await bgFetch('/api/marketplace/incoming', { method: 'POST', body: payload, timeoutMs: CONFIG.fetchTimeoutMs });
+    if (!res.ok) {
+      console.warn('[FBM bridge] backend request failed:', res.status, res.error || res.data);
+      setStatus('err',
+        res.status ? `Backend ${res.status} — see dashboard Logs`
+        : res.error === 'timeout' ? 'Backend slow/timeout — will retry'
+        : 'Backend offline — run start.bat');
       seen.delete(key);                         // allow a retry on the next tick
       return false;
-    } finally {
-      clearTimeout(ft);
     }
+    reply = res.data && (res.data.reply || res.data.text || res.data.message);
 
     if (!reply) { setStatus('err', 'Empty reply from chatbot'); return false; }
 
@@ -657,16 +656,13 @@
           text: (b.textContent || '').trim().slice(0, 16), svg: !!b.querySelector('svg, i, image'),
           rightOfBox: boxRect ? Math.round(r.left - boxRect.right) : null, x: Math.round(r.left),
         }; });
-      fetch(`${BACKEND}/api/debug`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          kind: 'mp-send-debug', url: location.href,
-          boxFound: !!box, boxAria: box ? (box.getAttribute('aria-label') || '') : null,
-          boxText: box ? (box.textContent || '').trim().slice(0, 50) : null,   // did typing land?
-          pickedAria: picked ? (picked.getAttribute('aria-label') || '(icon, no label)') : null,
-          composerButtons: btns,
-        }),
-      }).catch(() => {});
+      bgFetch('/api/debug', { method: 'POST', body: {
+        kind: 'mp-send-debug', url: location.href,
+        boxFound: !!box, boxAria: box ? (box.getAttribute('aria-label') || '') : null,
+        boxText: box ? (box.textContent || '').trim().slice(0, 50) : null,   // did typing land?
+        pickedAria: picked ? (picked.getAttribute('aria-label') || '(icon, no label)') : null,
+        composerButtons: btns,
+      } });
     } catch (_) {}
   }
 

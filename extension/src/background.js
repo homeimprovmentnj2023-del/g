@@ -293,6 +293,29 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     processNextQueueJob().then(() => sendResponse({ ok: true }));
     return true;
   }
+
+  // Backend fetch relay: content scripts (chat bridge, etc.) call the backend
+  // THROUGH the service worker, which can always reach localhost — so profiles
+  // whose page context can't reach the backend still work.
+  if (msg.type === 'BG_FETCH') {
+    (async () => {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), msg.timeoutMs || 35000);
+      try {
+        const res = await fetch(`${BACKEND}${msg.path}`, {
+          method: msg.method || 'GET',
+          headers: { 'Content-Type': 'application/json' },
+          body: msg.body != null ? JSON.stringify(msg.body) : undefined,
+          signal: ctrl.signal,
+        });
+        let data = null; try { data = await res.json(); } catch (_) {}
+        sendResponse({ ok: res.ok, status: res.status, data });
+      } catch (e) {
+        sendResponse({ ok: false, status: 0, error: e.name === 'AbortError' ? 'timeout' : (e.message || 'fetch failed') });
+      } finally { clearTimeout(timer); }
+    })();
+    return true; // async response
+  }
 });
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
