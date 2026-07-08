@@ -207,6 +207,25 @@ async function runPublishJob(job) {
       await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['src/autofill.js'] });
       await sleep(500);
 
+      // Pre-fetch photos HERE in the service worker (which can always reach the
+      // backend) and pass them to the page as data: URLs. The Facebook page never
+      // fetches localhost, so this works even on profiles whose page context can't
+      // reach the backend (the cause of Account B's "can't add photo" failures).
+      let photosForPage = job.photos || '[]';
+      try {
+        const urls = JSON.parse(job.photos || '[]');
+        const dataUrls = [];
+        for (const u of urls.slice(0, 3)) {
+          try {
+            const resp = await fetch(u);
+            if (!resp.ok) continue;
+            const dataUrl = await blobToDataUrl(await resp.blob());
+            if (dataUrl) dataUrls.push(dataUrl);
+          } catch (_) { /* skip this one */ }
+        }
+        if (dataUrls.length) photosForPage = JSON.stringify(dataUrls);
+      } catch (_) {}
+
       // Build template object from job fields
       const template = {
         __jobId:     job.id,           // correlate automation logs with this job
@@ -216,7 +235,7 @@ async function runPublishJob(job) {
         location:    job.location,
         category:    job.category,
         condition:   job.condition,
-        photos:      job.photos || '[]',
+        photos:      photosForPage,
       };
 
       // Drive the form via message to content script
@@ -293,3 +312,17 @@ function waitForTabLoad(tabId, timeout) {
 }
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+// Convert an image blob to a data: URL. Service-worker safe (no FileReader):
+// arrayBuffer → chunked base64 → data URL.
+async function blobToDataUrl(blob) {
+  try {
+    const bytes = new Uint8Array(await blob.arrayBuffer());
+    let bin = '';
+    const chunk = 0x8000;
+    for (let i = 0; i < bytes.length; i += chunk) {
+      bin += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+    }
+    return `data:${blob.type || 'image/jpeg'};base64,${btoa(bin)}`;
+  } catch (_) { return null; }
+}

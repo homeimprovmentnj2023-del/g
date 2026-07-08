@@ -301,10 +301,11 @@ window.FBMAutofill = (() => {
     const res = await fetch(src);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const blob = await res.blob();
-    if (!blob.type.startsWith('image/') && !/\.(jpe?g|png|webp|gif)$/i.test(src)) {
+    const isData = /^data:/i.test(src);
+    if (!blob.type.startsWith('image/') && !isData && !/\.(jpe?g|png|webp|gif)$/i.test(src)) {
       throw new Error('not an image');
     }
-    const name = (src.split('/').pop() || 'photo.jpg').split('?')[0];
+    const name = isData ? `photo-${Date.now()}.jpg` : (src.split('/').pop() || 'photo.jpg').split('?')[0];
     return new File([blob], name, { type: blob.type || 'image/jpeg' });
   }
 
