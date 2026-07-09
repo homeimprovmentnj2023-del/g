@@ -515,50 +515,49 @@
     blog('reset → monitoring inbox');
   }
 
-  // ── One tick: reply to the open thread if it has a pending message; otherwise
-  //    dispatch the next unread conversation. A thread is never excluded. ───────
+  // Close / deselect the currently open conversation (best effort — two-pane
+  // inboxes have no close button, in which case opening the next chat deselects).
+  function closeChat() {
+    const close = document.querySelector(
+      '[aria-label="Close chat"][role="button"], [aria-label="Close"][role="button"], ' +
+      '[aria-label="Back"][role="button"], [aria-label="Cerrar chat"][role="button"], ' +
+      '[aria-label="Cerrar"][role="button"]');
+    if (close && visible(close)) { clickEl(close); return true; }
+    return false;
+  }
+
+  // ── Sequential inbox processor. Take the most recent chats and, for EACH ONE,
+  //    OPEN → REPLY (only if the customer had the last word) → CLOSE — fully,
+  //    before moving to the next. It never opens the next until the current is
+  //    done, so it can't race through chats leaving them unanswered.
+  const MAX_CHATS_PER_CYCLE = 5;     // the last N conversations
+  const CYCLE_GAP_MS = 8000;         // rest between full sweeps
   let ticking = false;
-  let pendingKey = '', pendingSince = 0;              // which chat looks pending, and since when
+  let lastCycleAt = 0;
   async function check() {
     if (ticking) return;
+    if (Date.now() - lastCycleAt < CYCLE_GAP_MS) return;   // rest between sweeps
     ticking = true; tickStartedAt = Date.now();
     try {
-      lastScanAt = Date.now();                       // a scan ran → monitoring is alive
-      const scan = refreshQueue();
-      const openKey = keyOf(conversationInfo().title);
-      reportDiag({ inbox: scan, queueLen: messageQueue.length, openThread: openKey });
-
-      // 1) If the OPEN thread has an unanswered customer message, reply to it
-      //    (paced so we never burst), then RESET back to inbox monitoring.
-      const pending = openKey ? latestInbound() : null;
-      if (pending) {
-        // Track how long we've been stuck on THIS chat without replying. FB
-        // restores the last-open chat after a reload; if we can't make progress on
-        // it (send fails, name-collision echo, etc.) we must not let it freeze the
-        // whole inbox — after stuckMs we skip it and go scan for other customers.
-        if (pendingKey !== openKey) { pendingKey = openKey; pendingSince = Date.now(); }
-        const stuck = Date.now() - pendingSince > CONFIG.stuckMs;
-        if (!stuck && Date.now() - lastReplyAt >= CONFIG.minReplyGapMs) {
-          const replied = await handleOpenConversation();
-          if (replied) { lastReplyAt = Date.now(); pendingKey = ''; pendingSince = 0; lastOpenedKey = ''; returnToInbox(); }
-        } else if (stuck) {
-          blog('unstick: no progress on', openKey, '→ scanning inbox for others');
-          if (lastOpenedKey) { answered.set(lastOpenedKey, Date.now()); lastOpenedKey = ''; }
-          pendingKey = ''; pendingSince = 0;
-          dispatchNext();
-        }
-      } else {
-        // 2) Open thread has nothing to reply. If we opened this chat, it's now
-        //    loaded (openKey present), and it needs no reply → remember that so we
-        //    don't reopen it in a loop. (Guarded by openKey so we never mark a chat
-        //    answered during a transition when nothing is loaded yet.)
-        if (openKey && lastOpenedKey && Date.now() - lastOpenAt > 2500) { answered.set(lastOpenedKey, Date.now()); lastOpenedKey = ''; }
-        pendingKey = ''; pendingSince = 0;
-        dispatchNext();
+      lastScanAt = Date.now();
+      if (!onChatPage()) return;
+      const rows = conversationRows().slice(0, MAX_CHATS_PER_CYCLE);   // the most recent chats
+      reportDiag({ inbox: { rows: conversationRows().length, processing: rows.length }, openThread: keyOf(conversationInfo().title) });
+      for (const row of rows) {
+        if (!onChatPage()) break;
+        setStatus('busy', 'Checking chat…');
+        clickConversation(row);                          // open this conversation
+        await sleep(CONFIG.settleMs + 1200);             // WAIT for it to fully load before acting
+        try {
+          const replied = await handleOpenConversation(); // replies iff the customer had the last word
+          if (replied) { lastReplyAt = Date.now(); await sleep(1200); }
+        } catch (e) { console.warn('[FBM bridge] reply', e && e.message); }
+        closeChat();                                     // always close / deselect
+        await sleep(700);
       }
       pruneMemory();
     } catch (e) { console.warn('[FBM bridge]', e); }
-    finally { ticking = false; tickStartedAt = 0; }
+    finally { ticking = false; lastCycleAt = Date.now(); tickStartedAt = 0; }
   }
 
   // Type the reply into the compose box and (if autoSend) send it, verifying it
