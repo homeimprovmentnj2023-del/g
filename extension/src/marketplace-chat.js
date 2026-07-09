@@ -182,7 +182,8 @@
     const scope = convLog() || document;
     scope.querySelectorAll('[aria-label]').forEach(el => {
       const a = el.getAttribute('aria-label') || '';
-      if (!/\bmessage\b/i.test(a)) return;
+      const isMedia = /\b(photo|image|picture|attachment|file|sticker|gif|video|voice|clip|audio)\b/i.test(a);
+      if (!/\bmessage\b/i.test(a) && !isMedia) return;   // text messages OR media only
       if (seenLabels.has(a)) return; seenLabels.add(a);
       const bot = !!(el.dataset && el.dataset.fbmBot === '1');
       const m = a.match(/\bby\s+(.+?):\s*([\s\S]+?)\s*$/i);   // "…by <Sender>: <text>"
@@ -191,12 +192,14 @@
         return;
       }
       // Media message (photo/attachment/sticker/gif/video): no text after the
-      // colon, or the label names an attachment. Treat as a "[photo]" inbound so
-      // the bot still replies ("thanks for the picture — we can work with that").
-      const sender = (a.match(/\bby\s+(.+?)\s*:?\s*$/i) || [])[1];
-      const isMedia = /\b(photo|image|picture|attachment|file|sticker|gif|video|voice|clip|audio)\b/i.test(a);
-      if (sender && isMedia) {
-        out.push({ el, sender: sender.trim(), text: '[Customer sent a photo]', raw: a, media: true, bot });
+      // colon. Its label may lack the word "message", so pull the sender from
+      // "by X", "X sent…", or "from X". Treat as a "[photo]" inbound so the bot
+      // still replies ("thanks for the picture — we can work with that").
+      if (isMedia) {
+        const sender = ((a.match(/\bby\s+(.+?)\s*:?\s*$/i) || [])[1]
+                     || (a.match(/^\s*(.+?)\s+sent\b/i) || [])[1]
+                     || (a.match(/\bfrom\s+(.+?)\s*[:.]?\s*$/i) || [])[1] || '').trim();
+        out.push({ el, sender, text: '[Customer sent a photo]', raw: a, media: true, bot });
       }
     });
     return out;
@@ -560,6 +563,7 @@
   //    done, so it can't race through chats leaving them unanswered.
   const MAX_CHATS_PER_CYCLE = 5;     // the last N conversations
   const CYCLE_GAP_MS = 8000;         // rest between full sweeps
+  const RECENT_OPEN_MS = 25000;      // don't reopen a just-handled chat while its row preview lags
   let ticking = false;
   let lastCycleAt = 0;
   async function check() {
@@ -569,11 +573,24 @@
     try {
       lastScanAt = Date.now();
       if (!onChatPage()) return;
-      const rows = conversationRows().slice(0, MAX_CHATS_PER_CYCLE);   // the most recent chats
-      reportDiag({ inbox: { rows: conversationRows().length, processing: rows.length }, openThread: keyOf(conversationInfo().title) });
+      const all = conversationRows();
+      // Only open chats that ACTUALLY need a reply: the row preview shows the
+      // customer had the last word (no "You:" prefix) or it's marked unread. Once
+      // we've replied, FB shows "You:" on that row → it's skipped → no more
+      // constant re-opening of already-answered chats. Also skip a chat we opened
+      // in the last RECENT_OPEN_MS so a lagging row preview (FB is slow to switch
+      // it to "You:") can't make us reopen a chat we just handled.
+      const rows = all.filter(r => {
+        if (!(rowIsUnread(r) || rowNeedsReply(r))) return false;
+        const t = threadState.get(rowKey(r));
+        return !(t && Date.now() - t < RECENT_OPEN_MS);
+      }).slice(0, MAX_CHATS_PER_CYCLE);
+      reportDiag({ inbox: { rows: all.length, needsReply: rows.length }, openThread: keyOf(conversationInfo().title) });
+      if (!rows.length) { setStatus('ok', 'Monitoring inbox'); return; }   // nothing waiting → stay idle
       for (const row of rows) {
         if (!onChatPage()) break;
         setStatus('busy', 'Checking chat…');
+        threadState.set(rowKey(row), Date.now());        // remember we handled this chat
         clickConversation(row);                          // open this conversation
         await sleep(CONFIG.settleMs + 1200);             // WAIT for it to fully load before acting
         try {
