@@ -217,6 +217,10 @@
   //    we only remember when we last OPENED it (a short re-open cooldown), so
   //    follow-up messages always re-enter monitoring. ──────────────────────────
   const threadState = new Map();         // rowKey -> last time we opened that row
+  const answered = new Map();            // rowKey -> when we opened it and found NOTHING to reply
+  let lastOpenedKey = '', lastOpenAt = 0; // gate: open ONE chat at a time, let it load + get answered
+  const OPEN_GAP_MS = 5000;              // min ms between opening chats (so each can be replied to)
+  const ANSWERED_COOLDOWN_MS = 90000;    // don't re-open a checked/answered chat for 90s
   const keyOf = t => String(t || '').toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '').slice(0, 48);
   function rowKey(row) {
     const a = (row.tagName === 'A' && row.getAttribute('href')) ? row : row.querySelector('a[href*="/t/"]');
@@ -464,6 +468,8 @@
       if (!k) continue;
       const opened = threadState.get(k);
       if (opened && Date.now() - opened < 15000) continue;     // just opened → let FB update the row
+      const ans = answered.get(k);
+      if (ans && Date.now() - ans < ANSWERED_COOLDOWN_MS) continue;  // already checked, nothing to reply
       if (!messageQueue.includes(k)) { messageQueue.push(k); blog('queued', k, 'queueLen=', messageQueue.length); }
     }
     return {
@@ -479,12 +485,16 @@
   const messageQueue = [];
   function dispatchNext() {
     if (!messageQueue.length) return false;
+    // Open ONE chat at a time: wait for the last-opened chat to load and be
+    // answered before opening another, so we don't race through chats unanswered.
+    if (Date.now() - lastOpenAt < OPEN_GAP_MS) return false;
     for (let i = 0; i < messageQueue.length; i++) {
       const k = messageQueue[i];
       let row = null;
       for (const r of conversationRows()) { if (rowKey(r) === k) { row = r; break; } }
       if (!row || (!rowIsUnread(row) && !rowNeedsReply(row))) { messageQueue.splice(i, 1); i--; continue; }  // gone/answered → drop
       threadState.set(k, Date.now());
+      lastOpenedKey = k; lastOpenAt = Date.now();
       messageQueue.splice(i, 1);                 // remove; will re-queue if still unread later
       blog('→ open', k, 'queueLen=', messageQueue.length);
       setStatus('busy', 'Opening next chat…');
@@ -497,14 +507,11 @@
   // ── Reset after a reply: detach from the conversation and return to clean
   //    inbox monitoring. SPA-safe — never forces a full page reload. ───────────
   function returnToInbox() {
-    // The practical "return to inbox": move to the next waiting customer.
-    if (dispatchNext()) { blog('reset → next customer'); return; }
-    // No one else waiting → try to close/deselect the current chat if FB offers a
-    // control (some layouts have a back/close button; two-pane inboxes don't).
+    // After a reply, the tick loop opens the next waiting customer on its own,
+    // PACED (one chat per OPEN_GAP_MS) so each gets answered before the next opens.
+    // Optionally deselect/close the current chat if FB offers a control.
     const close = document.querySelector('div[aria-label="Close chat"][role="button"], div[aria-label="Close"][role="button"], div[aria-label="Back"][role="button"]');
     if (close && visible(close)) { blog('reset → closed chat view'); clickEl(close); return; }
-    // Otherwise stay put: the tick keeps scanning the WHOLE inbox every cycle, so
-    // the next unread (from anyone, including a follow-up) is picked up on its own.
     blog('reset → monitoring inbox');
   }
 
@@ -533,15 +540,19 @@
         const stuck = Date.now() - pendingSince > CONFIG.stuckMs;
         if (!stuck && Date.now() - lastReplyAt >= CONFIG.minReplyGapMs) {
           const replied = await handleOpenConversation();
-          if (replied) { lastReplyAt = Date.now(); pendingKey = ''; pendingSince = 0; returnToInbox(); }
+          if (replied) { lastReplyAt = Date.now(); pendingKey = ''; pendingSince = 0; lastOpenedKey = ''; returnToInbox(); }
         } else if (stuck) {
           blog('unstick: no progress on', openKey, '→ scanning inbox for others');
-          if (openKey) threadState.set(openKey, Date.now());   // brief cooldown, don't reopen instantly
+          if (lastOpenedKey) { answered.set(lastOpenedKey, Date.now()); lastOpenedKey = ''; }
           pendingKey = ''; pendingSince = 0;
           dispatchNext();
         }
       } else {
-        // 2) Open thread is idle/answered → move to the next unread conversation.
+        // 2) Open thread has nothing to reply. If we opened this chat, it's now
+        //    loaded (openKey present), and it needs no reply → remember that so we
+        //    don't reopen it in a loop. (Guarded by openKey so we never mark a chat
+        //    answered during a transition when nothing is loaded yet.)
+        if (openKey && lastOpenedKey && Date.now() - lastOpenAt > 2500) { answered.set(lastOpenedKey, Date.now()); lastOpenedKey = ''; }
         pendingKey = ''; pendingSince = 0;
         dispatchNext();
       }
@@ -766,6 +777,8 @@
     const cap = (set, n) => { if (set.size > n) { const keep = [...set].slice(-Math.floor(n / 2)); set.clear(); keep.forEach(x => set.add(x)); } };
     cap(seen, 600); cap(botSent, 400);
     if (threadState.size > 300) { const e = [...threadState.entries()].sort((a, b) => a[1] - b[1]).slice(-150); threadState.clear(); e.forEach(([k, v]) => threadState.set(k, v)); }
+    // Drop expired answered-cooldowns so a chat with a genuine new message can reopen.
+    for (const [k, t] of answered) { if (Date.now() - t > ANSWERED_COOLDOWN_MS) answered.delete(k); }
   }
 
   function timeAgo(t) {
