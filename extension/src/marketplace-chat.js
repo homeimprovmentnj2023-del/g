@@ -133,12 +133,32 @@
     );
   }
 
-  // The open conversation: title ("Buyer · Listing") + buyer display name.
+  // The OPEN conversation's message-thread region (role="log", "Messages in
+  // conversation titled …"). Scoping to this excludes the inbox-list previews,
+  // which otherwise leak other conversations' messages into scanMessages() and
+  // make the bot think the open chat is already answered. Picks the largest
+  // visible log when several exist.
+  function convLog() {
+    const logs = [...document.querySelectorAll('[role="log"]')].filter(visible);
+    if (logs.length) return logs.sort((a, b) => b.getBoundingClientRect().height - a.getBoundingClientRect().height)[0];
+    return document.querySelector('[aria-label^="Messages in conversation" i]') || null;
+  }
+
+  // The open conversation: title ("Buyer · Listing") + buyer display name. Prefer
+  // the message-log's own aria-label (always matches the messages shown); fall
+  // back to the compose box, which can be a stale/other conversation's box.
   function conversationInfo() {
-    const box = composeBox();
-    const al = box ? (box.getAttribute('aria-label') || '') : '';
-    const m = al.match(/^\s*(?:Write to|Message)\s+(.+?)\s*$/i);
-    const title = m ? m[1].trim() : '';                 // "Luis · Bathtub glaze"
+    let title = '';
+    const log = convLog();
+    if (log) {
+      const m = (log.getAttribute('aria-label') || '').match(/conversation(?:\s+titled|\s+with)?\s+(.+?)\s*$/i);
+      if (m) title = m[1].trim();
+    }
+    if (!title) {
+      const box = composeBox();
+      const m = (box ? (box.getAttribute('aria-label') || '') : '').match(/^\s*(?:Write to|Message)\s+(.+?)\s*$/i);
+      title = m ? m[1].trim() : '';
+    }
     const buyer = (title.split('·')[0] || '').trim() || null;
     return { title, buyer, listing: (title.split('·')[1] || '').trim() || null };
   }
@@ -152,11 +172,15 @@
 
   function contactName() { return conversationInfo().buyer; }
 
-  // All parsed messages in the open thread, in DOM order.
+  // All parsed messages in the open thread, in DOM order. Scoped to the open
+  // conversation's message log so we DON'T pick up the inbox-list previews (each
+  // list row carries an aria-label with another conversation's last message —
+  // scanning the whole document mixed those in and broke buyer detection).
   function scanMessages() {
     const out = [];
     const seenLabels = new Set();
-    document.querySelectorAll('[aria-label]').forEach(el => {
+    const scope = convLog() || document;
+    scope.querySelectorAll('[aria-label]').forEach(el => {
       const a = el.getAttribute('aria-label') || '';
       if (!/\bmessage\b/i.test(a)) return;
       if (seenLabels.has(a)) return; seenLabels.add(a);
@@ -188,9 +212,12 @@
     // answered — nothing pending. (The old code filtered our reply out first, so
     // an already-answered message looked pending forever → stuck on that chat.)
     if (last.bot || botSent.has(norm(last.text))) return null;
-    const { buyer } = conversationInfo();
-    const fromBuyer = buyer ? last.sender.toLowerCase().includes(buyer.toLowerCase()) : true;
-    return (fromBuyer && last.text) ? { row: last.el, text: last.text, sender: last.sender } : null;
+    // A message is the customer's unless WE sent it. Our messages are labelled
+    // "by You" (English) / "by Tú" (Spanish). Don't require the sender to match
+    // the compose-box name — that box can belong to another conversation.
+    const s = (last.sender || '').trim();
+    const isOurs = /^(you|t[úu])\b/i.test(s);
+    return (!isOurs && last.text) ? { row: last.el, text: last.text, sender: last.sender } : null;
   }
 
   // ── Self-diagnostic: report what we see to the dashboard (so calibration can
@@ -250,8 +277,9 @@
 
     // Conversation memory: send the recent thread (read from the DOM) so the bot
     // has context — Marketplace chats aren't stored in the bot's database.
-    const { buyer } = conversationInfo();
-    const roleOf = m => (m.bot || botSent.has(norm(m.text)) || !(buyer && m.sender.toLowerCase().includes(buyer.toLowerCase()))) ? 'You' : 'Customer';
+    // Our messages are "by You"/"Tú" (or ones we just sent); everything else in
+    // the (log-scoped) thread is the customer.
+    const roleOf = m => (m.bot || botSent.has(norm(m.text)) || /^(you|t[úu])\b/i.test((m.sender || '').trim())) ? 'You' : 'Customer';
     const history = scanMessages().slice(-13, -1).map(m => ({ role: roleOf(m), text: m.text }));
 
     // Namespace the thread id by account so threads from different Facebook
