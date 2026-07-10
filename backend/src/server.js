@@ -787,6 +787,21 @@ app.post('/api/heartbeat', (req, res) => {
   res.json({ ok: true });
 });
 
+// Which Chrome profiles are actually reporting in? A job only ever posts for an
+// account whose profile is open, so this answers "why isn't C posting?".
+app.get('/api/heartbeat', (_req, res) => {
+  const now = Date.now();
+  const out = db.getAccounts().map(a => {
+    const hb = heartbeats.get(String(a.id));
+    return {
+      id: a.id, name: a.name, active: a.active,
+      live: !!(hb && now - hb.at < 10 * 60000),
+      last_seen_ms_ago: hb ? now - hb.at : null,
+    };
+  });
+  res.json(out);
+});
+
 // Verify the Telegram config end-to-end.
 app.post('/api/alert/test', async (req, res) => {
   if (!TG_TOKEN || !TG_CHAT) return res.status(400).json({ error: 'Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in backend/.env, then restart.' });

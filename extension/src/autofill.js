@@ -261,6 +261,26 @@ window.FBMAutofill = (() => {
         || opts.find(o => (o.textContent || '').trim().toLowerCase().includes(lower));
   }
 
+  // Facebook VIRTUALISES the long category list — the row you want ("Home
+  // Improvement Supplies") often isn't rendered until you scroll to it, which is
+  // why matching used to silently fall through to a fallback like "Tools". Scroll
+  // the picker and re-scan before giving up.
+  async function matchOptionScrolling(text, tries = 8) {
+    let opt = matchOption(text);
+    if (opt) return opt;
+    const scopes = [...document.querySelectorAll('[role="dialog"], [role="menu"], [role="listbox"]')].filter(s => !isInNav(s));
+    const scope = scopes[scopes.length - 1];
+    if (!scope) return null;
+    const scrollers = [scope, ...scope.querySelectorAll('div')].filter(e => e.scrollHeight > e.clientHeight + 20);
+    for (let i = 0; i < tries; i++) {
+      scrollers.forEach(s => { s.scrollTop += 400; });
+      await sleep(320);
+      opt = matchOption(text);
+      if (opt) return opt;
+    }
+    return null;
+  }
+
   // Has the picker closed? (no more option rows visible)
   function pickerOpen() { return collectOptions().length > 0; }
 
@@ -279,8 +299,8 @@ window.FBMAutofill = (() => {
 
     // 1) Try to match a preferred/fallback value by typing (if searchable) or scanning.
     for (const value of candidates) {
-      if (search) { setNativeValue(search, value); await sleep(700); }
-      const opt = matchOption(value);
+      if (search) { setNativeValue(search, value); await sleep(900); }
+      const opt = await matchOptionScrolling(value);
       if (opt) {
         const chosen = (opt.textContent || '').trim();
         opt.click();
@@ -493,6 +513,34 @@ window.FBMAutofill = (() => {
     'tennessee','texas','utah','vermont','virginia','washington','west virginia','wisconsin','wyoming',
     'district of columbia'];
 
+  // ZIP → state, by USPS 3-digit prefix ranges. This lets us VERIFY that the row
+  // Facebook offers is in the state the ZIP really belongs to, without needing the
+  // ZIP to be printed in the suggestion text (FB often shows just "Brooklyn, NY").
+  const ZIP_PREFIX_STATE = [
+    [5, 5, 'NY'], [10, 27, 'MA'], [28, 29, 'RI'], [30, 38, 'NH'], [39, 49, 'ME'], [50, 59, 'VT'],
+    [60, 69, 'CT'], [70, 89, 'NJ'], [100, 149, 'NY'], [150, 196, 'PA'], [197, 199, 'DE'],
+    [200, 205, 'DC'], [206, 219, 'MD'], [220, 246, 'VA'], [247, 268, 'WV'], [270, 289, 'NC'],
+    [290, 299, 'SC'], [300, 319, 'GA'], [320, 349, 'FL'], [350, 369, 'AL'], [370, 385, 'TN'],
+    [386, 397, 'MS'], [398, 399, 'GA'], [400, 427, 'KY'], [430, 459, 'OH'], [460, 479, 'IN'],
+    [480, 499, 'MI'], [500, 528, 'IA'], [530, 549, 'WI'], [550, 567, 'MN'], [570, 577, 'SD'],
+    [580, 588, 'ND'], [590, 599, 'MT'], [600, 629, 'IL'], [630, 658, 'MO'], [660, 679, 'KS'],
+    [680, 693, 'NE'], [700, 714, 'LA'], [716, 729, 'AR'], [730, 749, 'OK'], [750, 799, 'TX'],
+    [800, 816, 'CO'], [820, 831, 'WY'], [832, 838, 'ID'], [840, 847, 'UT'], [850, 865, 'AZ'],
+    [870, 884, 'NM'], [885, 885, 'TX'], [889, 898, 'NV'], [900, 961, 'CA'], [967, 968, 'HI'],
+    [970, 979, 'OR'], [980, 994, 'WA'], [995, 999, 'AK'],
+  ];
+  function stateForZip(zip) {
+    const p = parseInt(String(zip || '').slice(0, 3), 10);
+    if (!Number.isFinite(p)) return '';
+    const hit = ZIP_PREFIX_STATE.find(([lo, hi]) => p >= lo && p <= hi);
+    return hit ? hit[2] : '';
+  }
+  // Is this suggestion in `st`? Facebook prints ", NY" / "· NY" in the row text.
+  function suggestionInState(text, st) {
+    if (!st) return false;
+    return new RegExp(`(^|[,·\\s])${st}\\b`).test(String(text || ''));
+  }
+
   function isUSLocation(text) {
     const t = (text || '').trim();
     if (!t) return false;
@@ -551,23 +599,37 @@ window.FBMAutofill = (() => {
     // We ONLY post in the United States, in the state the ZIP actually belongs to.
     // Accept a suggestion only when it can be VERIFIED:
     //   • it contains the ZIP we asked for, or
+    //   • it sits in the state that ZIP belongs to (e.g. 11234 → "Brooklyn, NY"), or
     //   • it is the ONLY US suggestion offered (unambiguous).
-    // If several US cities in different states come back, that's ambiguous — do NOT
-    // guess. Guessing (the old `us[0]`) is exactly how listings landed in the wrong
-    // state, and a foreign row is never confirmed.
+    // Otherwise do NOT guess — blindly taking the first US row (the old `us[0]`) is
+    // exactly how listings landed in the wrong state. A foreign row is never confirmed.
+    const expectState = stateForZip(zip);
     const pickVerified = () => {
       const us = locationSuggestions().filter(o => isUSLocation(o.textContent || ''));
       if (!us.length) return null;
       if (zip) { const exact = us.find(o => (o.textContent || '').includes(zip)); if (exact) return exact; }
+      if (expectState) { const inState = us.find(o => suggestionInState(o.textContent || '', expectState)); if (inState) return inState; }
       return us.length === 1 ? us[0] : null;
     };
 
-    // Re-type (progressively slower) rather than appending a ", United States"
+    // Wait for Facebook to actually return suggestions instead of sleeping a fixed
+    // amount — a slow autocomplete was making good ZIPs (e.g. 20814) fail at random.
+    const waitForSuggestions = async (ms) => {
+      const t0 = Date.now();
+      while (Date.now() - t0 < ms) {
+        if (locationSuggestions().length) return true;
+        await sleep(200);
+      }
+      return false;
+    };
+
+    // Re-type (progressively more patient) rather than appending a ", United States"
     // hint — that hint ended up typed into the box and skewed the suggestions.
     for (let attempt = 0; attempt < 3; attempt++) {
-      await typeIn(raw, attempt ? 2400 : 1800);
+      await typeIn(raw, 400);
+      await waitForSuggestions(attempt ? 5000 : 3000);
       let pick = pickVerified();
-      if (!pick) { await sleep(1200); pick = pickVerified(); }
+      if (!pick) { await sleep(1000); pick = pickVerified(); }
       if (pick) {
         const chosen = (pick.textContent || '').trim();
         realClick(pick);
@@ -579,7 +641,7 @@ window.FBMAutofill = (() => {
       }
     }
 
-    log('location', 'error', `no US suggestion verifiably matching "${raw}" — refusing to guess a state`);
+    log('location', 'error', `no US suggestion for "${raw}" in expected state ${expectState || '?'} — refusing to guess`);
     return false;
   }
 
