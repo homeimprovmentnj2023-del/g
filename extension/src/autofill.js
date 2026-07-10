@@ -26,8 +26,17 @@ window.FBMAutofill = (() => {
   const PUBLISH_WORDS = ['publish', 'post', 'list', 'publicar'];
 
   // Fallback categories tried (in order) when the preferred one isn't available.
-  // Broad, commonly-present Marketplace categories that accept most items/services.
-  const CATEGORY_FALLBACKS = ['Miscellaneous', 'Other', 'Garage Sale', 'Home & Garden', 'Tools'];
+  // These are REAL Marketplace category names (the templates say "Home Improvement",
+  // Facebook calls it "Home Improvement Supplies" — matchOption's substring match
+  // bridges that, and the rest are genuine fallbacks that accept our items).
+  const CATEGORY_FALLBACKS = ['Home Improvement Supplies', 'Tools', 'Home Goods',
+    'Garden & Outdoor', 'Household Supplies', 'Miscellaneous', 'Other'];
+
+  // NEVER auto-pick these when falling back to "first available option": they
+  // change the whole create form (or are plainly wrong for our items), which is
+  // how a listing ends up mis-categorised or the form gets stuck.
+  const AUTO_PICK_AVOID = ['vehicles', 'property rentals', 'property for sale', 'home sales',
+    'homes for sale', 'classifieds', 'buy and sell groups', 'jobs', 'free stuff', 'rentals'];
 
   // Strong, specific phrases that indicate a REAL block/rejection — never the
   // generic "weapons, counterfeits … aren't allowed … see our commerce policies"
@@ -214,6 +223,7 @@ window.FBMAutofill = (() => {
     const seen = new Set();
     return opts.filter(o => {
       if (seen.has(o)) return false; seen.add(o);
+      if (isInNav(o)) return false;                 // never Facebook's own search/nav suggestions
       if (o.getAttribute('aria-disabled') === 'true') return false;
       const txt = (o.textContent || '').trim();
       if (!txt || txt.length > 60) return false;
@@ -223,6 +233,24 @@ window.FBMAutofill = (() => {
       const r = o.getBoundingClientRect();
       return r.width > 4 && r.height > 4;
     });
+  }
+
+  // Facebook's top bar / site search (and its suggestion dropdown) must never be
+  // mistaken for a picker: its rows are role=option too, and its input is
+  // input[type=search] — typing a category into it navigates away from the form.
+  function isInNav(el) {
+    return !!(el && el.closest && el.closest('[role="banner"], [role="navigation"], [aria-label="Facebook"]'));
+  }
+
+  // The search box BELONGING TO the open picker (dialog/menu/listbox) — not the
+  // page's nav search bar.
+  function pickerSearchInput() {
+    const scopes = [...document.querySelectorAll('[role="dialog"], [role="menu"], [role="listbox"]')].filter(s => !isInNav(s));
+    for (let i = scopes.length - 1; i >= 0; i--) {
+      const inp = scopes[i].querySelector('input[type="search"], input[aria-label*="Search" i], input[placeholder*="Search" i], input[type="text"]');
+      if (inp && !isInNav(inp)) { const r = inp.getBoundingClientRect(); if (r.width > 4 && r.height > 4) return inp; }
+    }
+    return null;
   }
 
   function matchOption(text) {
@@ -247,7 +275,7 @@ window.FBMAutofill = (() => {
     if (!opened) { log(desc, 'warn', 'could not open dropdown'); return null; }
     await sleep(800);
 
-    const search = document.querySelector('input[type="search"], [role="dialog"] input, input[aria-label*="Search" i]');
+    const search = pickerSearchInput();   // scoped to the picker — never FB's nav search
 
     // 1) Try to match a preferred/fallback value by typing (if searchable) or scanning.
     for (const value of candidates) {
@@ -287,7 +315,11 @@ window.FBMAutofill = (() => {
       }
       const opts = collectOptions();
       if (!opts.length) break;
-      const opt = opts[0];
+      // When auto-picking, skip categories that would rewrite the whole form
+      // (Vehicles, Property Rentals, …) rather than blindly taking options[0].
+      const safe = opts.filter(o => !AUTO_PICK_AVOID.includes((o.textContent || '').trim().toLowerCase()));
+      const opt = (clickFirstEachLevel ? safe[0] : null) || opts[0];
+      if (!opt) break;
       last = (opt.textContent || '').trim();
       opt.click();
       log(desc, 'info', `clicked option "${last}" (level ${level + 1})`);
@@ -491,73 +523,63 @@ window.FBMAutofill = (() => {
     return out;
   }
 
+  // The location we already set THIS RUN. fillLocation is called again on every
+  // step of the publish loop; without this guard it re-types into the field and can
+  // replace an already-correct pick with a wrong one.
+  let locationDone = '';
+
   async function fillLocation(value) {
     if (!value) return false;
+    if (locationDone && locationDone === String(value).trim()) return true;   // already set — don't clobber
     const el = findInput(LABELS.location);
     if (!el) return false; // location field not on this page
 
-    const zip = (String(value).match(/\d{4,}/) || [])[0];
+    const raw = String(value).trim();
+    const zip = (raw.match(/\b\d{5}\b/) || [])[0] || '';
 
-    // Type the ZIP/city.
-    el.focus();
-    setNativeValue(el, '');
-    setNativeValue(el, String(value));
-    el.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: zip ? zip.slice(-1) : 'a' }));
-    el.dispatchEvent(new KeyboardEvent('keyup',   { bubbles: true, key: zip ? zip.slice(-1) : 'a' }));
-    await sleep(1800);
-
-    // We ONLY post in the United States. Prefer a US suggestion; if none appear,
-    // re-type with an explicit "United States" hint. NEVER confirm a foreign row —
-    // fail instead, so a listing is never posted to another country (the same
-    // 5-digit ZIP exists in other countries and FB sometimes lists those first).
-    const bestUS = () => {
-      const opts = locationSuggestions();
-      const us = opts.filter(o => isUSLocation(o.textContent || ''));
-      if (!us.length) return null;
-      return (zip && us.find(o => (o.textContent || '').includes(zip))) || us[0];
-    };
-
-    let pick = bestUS();
-    if (!pick) { await sleep(1200); pick = bestUS(); }
-    if (!pick) {
-      // Push Facebook toward US results with an explicit country hint.
+    const typeIn = async (text, waitMs) => {
       el.focus();
       setNativeValue(el, '');
-      setNativeValue(el, `${value}, United States`);
-      el.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 's' }));
-      el.dispatchEvent(new KeyboardEvent('keyup',   { bubbles: true, key: 's' }));
-      await sleep(2000);
-      pick = bestUS();
-      if (!pick) { await sleep(1200); pick = bestUS(); }
-    }
-    if (pick) {
-      const chosen = (pick.textContent || '').trim();
-      realClick(pick);
-      if (pick.firstElementChild) realClick(pick.firstElementChild);
-      await sleep(900);
-      log('location', 'success', `selected US location "${chosen}"`);
-      return true;
-    }
+      await sleep(150);
+      setNativeValue(el, text);
+      const k = text.slice(-1) || 'a';
+      el.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: k }));
+      el.dispatchEvent(new KeyboardEvent('keyup',   { bubbles: true, key: k }));
+      await sleep(waitMs);
+    };
 
-    // Keyboard fallback — step through rows and Enter ONLY when the highlighted
-    // row is a US location; never confirm a foreign one.
-    el.focus();
-    const rows = locationSuggestions();
-    for (let i = 0; i < Math.max(1, rows.length); i++) {
-      el.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'ArrowDown', keyCode: 40, which: 40 }));
-      el.dispatchEvent(new KeyboardEvent('keyup',   { bubbles: true, key: 'ArrowDown', keyCode: 40, which: 40 }));
-      await sleep(350);
-      const active = document.querySelector('[aria-selected="true"], .a11y-active');
-      if (active && isUSLocation(active.textContent || '')) {
-        el.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'Enter', keyCode: 13, which: 13 }));
-        el.dispatchEvent(new KeyboardEvent('keyup',   { bubbles: true, key: 'Enter', keyCode: 13, which: 13 }));
-        await sleep(800);
-        if (!locationSuggestions().length) { log('location', 'success', `selected US location via keyboard for "${value}"`); return true; }
-        break;
+    // We ONLY post in the United States, in the state the ZIP actually belongs to.
+    // Accept a suggestion only when it can be VERIFIED:
+    //   • it contains the ZIP we asked for, or
+    //   • it is the ONLY US suggestion offered (unambiguous).
+    // If several US cities in different states come back, that's ambiguous — do NOT
+    // guess. Guessing (the old `us[0]`) is exactly how listings landed in the wrong
+    // state, and a foreign row is never confirmed.
+    const pickVerified = () => {
+      const us = locationSuggestions().filter(o => isUSLocation(o.textContent || ''));
+      if (!us.length) return null;
+      if (zip) { const exact = us.find(o => (o.textContent || '').includes(zip)); if (exact) return exact; }
+      return us.length === 1 ? us[0] : null;
+    };
+
+    // Re-type (progressively slower) rather than appending a ", United States"
+    // hint — that hint ended up typed into the box and skewed the suggestions.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      await typeIn(raw, attempt ? 2400 : 1800);
+      let pick = pickVerified();
+      if (!pick) { await sleep(1200); pick = pickVerified(); }
+      if (pick) {
+        const chosen = (pick.textContent || '').trim();
+        realClick(pick);
+        if (pick.firstElementChild) realClick(pick.firstElementChild);
+        await sleep(900);
+        locationDone = raw;
+        log('location', 'success', `selected US location "${chosen}" for "${raw}"`);
+        return true;
       }
     }
 
-    log('location', 'warn', `no US location found for "${value}" — did NOT select a foreign one`);
+    log('location', 'error', `no US suggestion verifiably matching "${raw}" — refusing to guess a state`);
     return false;
   }
 
