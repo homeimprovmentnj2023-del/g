@@ -247,6 +247,7 @@
   //    we only remember when we last OPENED it (a short re-open cooldown), so
   //    follow-up messages always re-enter monitoring. ──────────────────────────
   const threadState = new Map();         // rowKey -> last time we opened that row
+  const handledPreview = new Map();      // rowKey -> the row-preview text we last handled (open only on CHANGE)
   const answered = new Map();            // rowKey -> when we opened it and found NOTHING to reply
   let lastOpenedKey = '', lastOpenAt = 0; // gate: open ONE chat at a time, let it load + get answered
   const OPEN_GAP_MS = 5000;              // min ms between opening chats (so each can be replied to)
@@ -430,6 +431,18 @@
     return txt.length > 3;
   }
 
+  // The row's whole preview text (name + last-message snippet + time), whitespace-
+  // collapsed. Used as a per-chat fingerprint: we only re-open a chat when this
+  // CHANGES, i.e. a genuinely new message arrived — layout-independent, so it works
+  // even when FB doesn't put a "You:" prefix or an unread dot on the row.
+  function rowPreview(row) {
+    return (row && row.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 160);
+  }
+  // "We clearly had the last word here" — a fast skip when FB does show a You: prefix.
+  function weRepliedLast(prev) {
+    return /(^|\s|·)(you|t[úu]):\s|\byou sent\b|\byou replied\b|\byou reacted\b|\benviaste\b|\bhas enviado\b/i.test(prev || '');
+  }
+
   // Compact description of a candidate row (for calibration diagnostics).
   function rowInfo(r) {
     const hrefs = [...(r.querySelectorAll ? r.querySelectorAll('a[href]') : [])].map(a => a.getAttribute('href') || '');
@@ -574,23 +587,32 @@
       lastScanAt = Date.now();
       if (!onChatPage()) return;
       const all = conversationRows();
-      // Only open chats that ACTUALLY need a reply: the row preview shows the
-      // customer had the last word (no "You:" prefix) or it's marked unread. Once
-      // we've replied, FB shows "You:" on that row → it's skipped → no more
-      // constant re-opening of already-answered chats. Also skip a chat we opened
-      // in the last RECENT_OPEN_MS so a lagging row preview (FB is slow to switch
-      // it to "You:") can't make us reopen a chat we just handled.
+      // Open a chat ONLY when its preview changed since we last handled it (a new
+      // message) — not every chat every sweep. This is layout-independent: it
+      // doesn't rely on FB marking the row unread or printing a "You:" prefix.
+      // Skips: (a) chats where we clearly replied last, (b) chats whose preview is
+      // unchanged since we handled it, (c) chats opened in the last RECENT_OPEN_MS.
       const rows = all.filter(r => {
-        if (!(rowIsUnread(r) || rowNeedsReply(r))) return false;
-        const t = threadState.get(rowKey(r));
-        return !(t && Date.now() - t < RECENT_OPEN_MS);
+        const prev = rowPreview(r);
+        if (prev.length < 3) return false;
+        const k = rowKey(r);
+        if (weRepliedLast(prev)) { handledPreview.set(k, prev); return false; }
+        if (handledPreview.get(k) === prev) return false;      // unchanged since handled → nothing new
+        const t = threadState.get(k);
+        if (t && Date.now() - t < RECENT_OPEN_MS) return false; // just handled → let the preview settle
+        return true;
       }).slice(0, MAX_CHATS_PER_CYCLE);
-      reportDiag({ inbox: { rows: all.length, needsReply: rows.length }, openThread: keyOf(conversationInfo().title) });
-      if (!rows.length) { setStatus('ok', 'Monitoring inbox'); return; }   // nothing waiting → stay idle
+      reportDiag({
+        inbox: { rows: all.length, toOpen: rows.length },
+        rowsSample: all.slice(0, 8).map(r => ({ text: rowPreview(r).slice(0, 70), open: rows.includes(r) })),
+        openThread: keyOf(conversationInfo().title),
+      });
+      if (!rows.length) { setStatus('ok', 'Monitoring inbox'); return; }   // nothing new → stay idle
       for (const row of rows) {
         if (!onChatPage()) break;
+        const k = rowKey(row);
         setStatus('busy', 'Checking chat…');
-        threadState.set(rowKey(row), Date.now());        // remember we handled this chat
+        threadState.set(k, Date.now());                  // remember we handled this chat
         clickConversation(row);                          // open this conversation
         await sleep(CONFIG.settleMs + 1200);             // WAIT for it to fully load before acting
         try {
@@ -599,6 +621,10 @@
         } catch (e) { console.warn('[FBM bridge] reply', e && e.message); }
         closeChat();                                     // always close / deselect
         await sleep(700);
+        // Record this chat's CURRENT preview (now reflecting our reply) so we won't
+        // reopen it until a new customer message changes the preview again.
+        const cur = conversationRows().find(r => rowKey(r) === k);
+        handledPreview.set(k, cur ? rowPreview(cur) : 'handled_' + Date.now());
       }
       pruneMemory();
     } catch (e) { console.warn('[FBM bridge]', e); }
@@ -821,6 +847,7 @@
     const cap = (set, n) => { if (set.size > n) { const keep = [...set].slice(-Math.floor(n / 2)); set.clear(); keep.forEach(x => set.add(x)); } };
     cap(seen, 600); cap(botSent, 400);
     if (threadState.size > 300) { const e = [...threadState.entries()].sort((a, b) => a[1] - b[1]).slice(-150); threadState.clear(); e.forEach(([k, v]) => threadState.set(k, v)); }
+    if (handledPreview.size > 400) { const e = [...handledPreview.entries()].slice(-200); handledPreview.clear(); e.forEach(([k, v]) => handledPreview.set(k, v)); }
     // Drop expired answered-cooldowns so a chat with a genuine new message can reopen.
     for (const [k, t] of answered) { if (Date.now() - t > ANSWERED_COOLDOWN_MS) answered.delete(k); }
   }
