@@ -573,7 +573,7 @@ window.FBMAutofill = (() => {
   function suggestionInState(text, st) {
     if (!st) return false;
     const t = String(text || '');
-    if (new RegExp(`(^|[,·\\s])${st}\\b`).test(t)) return true;
+    if (new RegExp(`(^|[,·\\s])${st}(?=\\d|[^A-Za-z]|$)`).test(t)) return true;  // ", CA" or "CA1 person…"
     const full = STATE_ABBR_TO_NAME[st];
     return !!full && t.toLowerCase().includes(full);
   }
@@ -582,7 +582,9 @@ window.FBMAutofill = (() => {
     const t = (text || '').trim();
     if (!t) return false;
     if (/\bunited states\b|\bu\.?s\.?a\.?\b/i.test(t)) return true;
-    if (US_STATE_ABBR.some(a => new RegExp(`(,|\\s|·)\\s*${a}\\b`).test(t))) return true; // ", NY" / "· NJ"
+    // Match ", NY" / "· NJ" — and also "CA1 person…" where FB jams the check-in
+    // count straight onto the abbreviation (a plain \b fails there).
+    if (US_STATE_ABBR.some(a => new RegExp(`(,|\\s|·)\\s*${a}(?=\\d|[^A-Za-z]|$)`).test(t))) return true;
     const low = t.toLowerCase();
     if (US_STATE_NAMES.some(n => low.includes(n))) return true;
     return false;
