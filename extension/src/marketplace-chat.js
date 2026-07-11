@@ -675,33 +675,34 @@
   //    OPEN → REPLY (only if the customer had the last word) → CLOSE — fully,
   //    before moving to the next. It never opens the next until the current is
   //    done, so it can't race through chats leaving them unanswered.
-  const MAX_CHATS_PER_CYCLE = 5;     // the last N conversations
-  const LEARN_OPENS_PER_CYCLE = 1;   // undecidable/old chats: at most this many "learn" opens per sweep
+  const MAX_CHATS_PER_CYCLE = 5;     // max chats opened per sweep
   const CYCLE_GAP_MS = 8000;         // rest between full sweeps
   const RECENT_OPEN_MS = 25000;      // don't reopen a just-handled chat while its row preview lags
   let ticking = false;
   let lastCycleAt = 0;
 
-  // Pick the next row to open, prioritized. Explicit buyer-turn rows ("waiting for
-  // your response", "sent you a message", …) ALWAYS win and are re-evaluated after
-  // every chat, so a customer arriving mid-sweep jumps the queue. Undecidable raw-text
-  // rows that merely CHANGED are a weak "learn" fallback, budgeted to keep old chats
-  // from monopolizing a sweep. Returns { row, learn } or null.
-  function pickNextRow(learnBudgetLeft) {
+  // Pick the next row to open. A row is the BUYER's turn (needs a reply) unless we
+  // can prove it's ours: an explicit "You sent…" marker, or a preview matching a
+  // reply we remember sending (botSent). Everything else that isn't already handled
+  // is a customer message — including plain raw text like "Hi, I need a tub deglaze"
+  // (MOST buyer messages look like this — they carry no "sent you a message" marker).
+  // Priority: an explicit buyer-turn marker ("waiting for your response", "sent you
+  // a message", "sent N photos") beats plain raw text, but BOTH get opened — up to
+  // MAX_CHATS_PER_CYCLE per sweep. No throttling: skipping real messages was the bug.
+  function pickNextRow() {
     const all = conversationRows();
-    let fallbackRow = null;
+    let rawRow = null;
     for (const r of all) {
       const prev = rowPreview(r);
       if (prev.length < 3) continue;
       const k = rowKey(r);
-      if (rowOurTurn(prev) || rowMatchesBotSent(prev)) { handledPreview.set(k, prev); continue; }
+      if (rowOurTurn(prev) || rowMatchesBotSent(prev)) { handledPreview.set(k, prev); continue; }  // ours → skip
       const t = threadState.get(k);
-      if (t && Date.now() - t < RECENT_OPEN_MS) continue;   // just opened → let it settle
-      if (rowBuyerTurn(prev)) return { row: r, learn: false };   // explicit buyer-turn wins immediately
-      if (handledPreview.get(k) !== prev && !fallbackRow) fallbackRow = r;  // remember first changed raw row
+      if (t && Date.now() - t < RECENT_OPEN_MS) continue;        // just opened → let it settle
+      if (rowBuyerTurn(prev)) return { row: r };                 // explicit buyer-turn → highest priority
+      if (!rawRow && handledPreview.get(k) !== prev) rawRow = r;  // new/changed raw buyer text → open too
     }
-    if (fallbackRow && learnBudgetLeft > 0) return { row: fallbackRow, learn: true };
-    return null;
+    return rawRow ? { row: rawRow } : null;
   }
 
   async function check() {
@@ -711,20 +712,19 @@
     try {
       lastScanAt = Date.now();
       if (!onChatPage()) return;
-      // Selection ladder lives in pickNextRow() (from the observed row grammar — see
-      // rowBuyerTurn): explicit OUR-turn / bot-sent rows are skipped + remembered,
-      // explicit buyer-turn rows open first, undecidable raw rows open only on CHANGE
-      // and only within the per-sweep learn budget. The queue is re-evaluated after
-      // EVERY chat, so a buyer arriving mid-sweep is served next.
+      // Selection lives in pickNextRow(): our-turn / bot-sent rows are skipped, any
+      // other unhandled row (explicit buyer-turn OR plain raw customer text) is
+      // opened, up to MAX_CHATS_PER_CYCLE. Re-evaluated after EVERY chat, so a buyer
+      // arriving mid-sweep is served next.
       reportDiag({
         inbox: { rows: conversationRows().length },
         rowsSample: conversationRows().slice(0, 8).map(r => ({ text: rowPreview(r).slice(0, 70) })),
         openThread: keyOf(conversationInfo().title),
       });
-      let opens = 0, learnOpens = 0;
+      let opens = 0;
       while (opens < MAX_CHATS_PER_CYCLE) {
         if (!onChatPage()) break;
-        const next = pickNextRow(LEARN_OPENS_PER_CYCLE - learnOpens);
+        const next = pickNextRow();
         if (!next) break;
         const row = next.row;
         const k = rowKey(row);
@@ -732,18 +732,20 @@
         threadState.set(k, Date.now());                  // remember we handled this chat
         clickConversation(row);                          // open this conversation
         await sleep(CONFIG.settleMs + 1200);             // WAIT for it to fully load before acting
+        let replied = false;
         try {
-          const replied = await handleOpenConversation(); // replies iff the customer had the last word
+          replied = await handleOpenConversation();      // replies iff the customer had the last word
           if (replied) { lastReplyAt = Date.now(); await sleep(1200); }
         } catch (e) { console.warn('[FBM bridge] reply', e && e.message); }
         closeChat();                                     // always close / deselect
         await sleep(700);
-        // Record this chat's CURRENT preview (now reflecting our reply) so we won't
-        // reopen it until a new customer message changes the preview again.
+        // Record this chat's CURRENT preview so we don't reopen it until a NEW
+        // customer message changes the preview. (If we opened it and there was
+        // genuinely nothing to reply, recording is still correct — it was ours.)
         const cur = conversationRows().find(r => rowKey(r) === k);
         handledPreview.set(k, cur ? rowPreview(cur) : 'handled_' + Date.now());
         saveMemory();
-        opens++; if (next.learn) learnOpens++;
+        opens++;
       }
       if (!opens) setStatus('ok', 'Monitoring inbox');   // nothing new → stay idle
       pruneMemory();
@@ -1055,12 +1057,17 @@
     if (!onChatPage()) return;
     const nowT = Date.now();
     try {
-      // 1) Tab title — unread-count prefix like "(3) Messenger". Earliest, cheapest.
+      // 1) Tab title — the EARLIEST realtime signal. Two forms observed live:
+      //    "(3) Facebook" (unread count) and the transient "Thuy messaged Thuy ·
+      //    Bath tub Reglazed" that FB flashes when a NEW message lands. The count is
+      //    useless here (it saturates at "20+" because of many old unread), so the
+      //    "<Name> messaged" form is the reliable new-message trigger.
       if (document.title !== _sigTitle) {
-        const cnt = parseInt((document.title.match(/^\((\d+)\)/) || [])[1] || '0', 10) || 0;
+        const cnt = parseInt((document.title.match(/^\((\d+)\+?\)/) || [])[1] || '0', 10) || 0;
         bgFetch('/api/debug', { method: 'POST', body: { kind: 'mp-signal-probe', source: 'title', at: nowT, count: cnt, detail: document.title.slice(0, 80) } });
-        // A NEW message = the unread count went UP → re-sync the inbox immediately.
-        if (cnt > _sigTitleCount) doResync('title-unread+' + (cnt - _sigTitleCount));
+        const messaged = document.title.match(/^(.+?)\s+messaged\b/i);
+        if (messaged) doResync('title:new-msg-from-' + messaged[1].trim().slice(0, 20));   // realtime new message
+        else if (cnt > _sigTitleCount) doResync('title-unread+' + (cnt - _sigTitleCount)); // count went up
         _sigTitle = document.title; _sigTitleCount = cnt;
       }
       // 2) aria-live announcements — FB voices new messages here for screen readers,
