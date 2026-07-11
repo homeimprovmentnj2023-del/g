@@ -172,34 +172,62 @@
 
   function contactName() { return conversationInfo().buyer; }
 
-  // All parsed messages in the open thread, in DOM order. Scoped to the open
-  // conversation's message log so we DON'T pick up the inbox-list previews (each
-  // list row carries an aria-label with another conversation's last message —
-  // scanning the whole document mixed those in and broke buyer detection).
+  // Sender by BUBBLE ALIGNMENT: Facebook right-aligns OUR messages and
+  // left-aligns the buyer's. This is layout-level, so it works regardless of
+  // language and even when the label carries no sender at all — which is exactly
+  // the case for photos (their aria-label is just "Open photo…", observed live).
+  function alignedOurs(el, scope) {
+    try {
+      const box = (scope || convLog() || document.body).getBoundingClientRect();
+      const r = el.getBoundingClientRect();
+      if (!r.width || !box.width) return null;
+      const center = (r.left + r.right) / 2;
+      const frac = (center - box.left) / box.width;
+      if (frac > 0.58) return true;     // clearly right → ours
+      if (frac < 0.42) return false;    // clearly left → buyer's
+      return null;                      // ambiguous → let other signals decide
+    } catch (_) { return null; }
+  }
+
+  // All parsed messages in the open thread, in DOM order — scoped to the open
+  // conversation's message log so inbox-list previews can't leak in.
+  //
+  // Formats OBSERVED in this account's live diagnostics (not guessed):
+  //   "Enter, Message sent 11:25 PM by You: <text>"        → ours
+  //   "Enter, Message sent Tuesday 8:49pm by M Faisal: <t>" → buyer's
+  //   "At 11:25 PM, You: <text>"                            → ours (alt format)
+  //   "Open photo NaN"                                       → a PHOTO, no sender
+  // Each message gets .ours decided by: our own data-mark → explicit "by You"
+  // label → bubble alignment.
   function scanMessages() {
     const out = [];
-    const seenLabels = new Set();
+    const seenKeys = new Set();
     const scope = convLog() || document;
     scope.querySelectorAll('[aria-label]').forEach(el => {
       const a = el.getAttribute('aria-label') || '';
-      const isMedia = /\b(photo|image|picture|attachment|file|sticker|gif|video|voice|clip|audio)\b/i.test(a);
-      if (!/\bmessage\b/i.test(a) && !isMedia) return;   // text messages OR media only
-      if (seenLabels.has(a)) return; seenLabels.add(a);
       const bot = !!(el.dataset && el.dataset.fbmBot === '1');
-      const m = a.match(/\bby\s+(.+?):\s*([\s\S]+?)\s*$/i);   // "…by <Sender>: <text>"
-      if (m && m[2].trim()) {
-        out.push({ el, sender: m[1].trim(), text: m[2].trim(), raw: a, bot });
+
+      // Text message — "…by <Sender>: <text>" OR "At <time>, <Sender>: <text>".
+      let m = a.match(/\bby\s+(.+?):\s*([\s\S]+?)\s*$/i)
+           || a.match(/^At\s+[^,]+,\s*(.+?):\s*([\s\S]+?)\s*$/i);
+      if (m && m[2] && m[2].trim() && /\bmessage\b|^At\s/i.test(a)) {
+        const sender = m[1].trim();
+        const key = 'T:' + sender + ':' + m[2].trim().slice(0, 120);
+        if (seenKeys.has(key)) return; seenKeys.add(key);
+        // Text labels always carry the sender, so the label decides: "by You" is
+        // ours, "by <Name>" is the buyer's. (Alignment is only for senderless media.)
+        const labelOurs = /^(you|t[úu])\b/i.test(sender);
+        out.push({ el, sender, text: m[2].trim(), raw: a, bot, ours: bot || labelOurs });
         return;
       }
-      // Media message (photo/attachment/sticker/gif/video): no text after the
-      // colon. Its label may lack the word "message", so pull the sender from
-      // "by X", "X sent…", or "from X". Treat as a "[photo]" inbound so the bot
-      // still replies ("thanks for the picture — we can work with that").
-      if (isMedia) {
-        const sender = ((a.match(/\bby\s+(.+?)\s*:?\s*$/i) || [])[1]
-                     || (a.match(/^\s*(.+?)\s+sent\b/i) || [])[1]
-                     || (a.match(/\bfrom\s+(.+?)\s*[:.]?\s*$/i) || [])[1] || '').trim();
-        out.push({ el, sender, text: '[Customer sent a photo]', raw: a, media: true, bot });
+
+      // Photo/attachment — label has NO sender ("Open photo …"); alignment decides.
+      if (/^(open photo|open attachment|photo sent|attachment)/i.test(a) || /\b(sent (a|\d+) photos?|sent an attachment)\b/i.test(a)) {
+        const al = alignedOurs(el, scope);
+        // Key by position in the thread so a SECOND photo isn't deduped away.
+        const key = 'M:' + Math.round(el.getBoundingClientRect().top) + ':' + a.slice(0, 40);
+        if (seenKeys.has(key)) return; seenKeys.add(key);
+        out.push({ el, sender: al === true ? 'You' : '', text: '[Customer sent a photo]', raw: a, media: true, bot, ours: bot || al === true });
       }
     });
     return out;
@@ -211,16 +239,12 @@
     const msgs = scanMessages();
     if (!msgs.length) return null;
     const last = msgs[msgs.length - 1];          // the ACTUAL last message in the thread
-    // If WE had the last word (our reply / a text we sent), the thread is
-    // answered — nothing pending. (The old code filtered our reply out first, so
-    // an already-answered message looked pending forever → stuck on that chat.)
-    if (last.bot || botSent.has(norm(last.text))) return null;
-    // A message is the customer's unless WE sent it. Our messages are labelled
-    // "by You" (English) / "by Tú" (Spanish). Don't require the sender to match
-    // the compose-box name — that box can belong to another conversation.
-    const s = (last.sender || '').trim();
-    const isOurs = /^(you|t[úu])\b/i.test(s);
-    return (!isOurs && last.text) ? { row: last.el, text: last.text, sender: last.sender } : null;
+    if (last.ours || last.bot || botSent.has(norm(last.text))) return null;
+    // For photos, make the reply key UNIQUE per photo (position-based), so a
+    // second photo from the same buyer still gets a reply instead of being
+    // deduped by the constant "[Customer sent a photo]" text.
+    const mediaKey = last.media ? ('#' + msgs.filter(x => x.media).length) : '';
+    return last.text ? { row: last.el, text: last.text, sender: last.sender, dedupeSuffix: mediaKey } : null;
   }
 
   // ── Self-diagnostic: report what we see to the dashboard (so calibration can
@@ -249,6 +273,36 @@
   const threadState = new Map();         // rowKey -> last time we opened that row
   const handledPreview = new Map();      // rowKey -> the row-preview text we last handled (open only on CHANGE)
   const answered = new Map();            // rowKey -> when we opened it and found NOTHING to reply
+
+  // ── Persist chat memory across page refreshes. Without this, a reload wiped
+  //    handledPreview/botSent and the bot re-opened every old chat once ("opening
+  //    chats from before") before re-learning their state. ────────────────────
+  const STORE_KEY = () => 'mpChatMemory_' + (currentAccountId || 'default');
+  let _saveT = null;
+  function saveMemory() {
+    clearTimeout(_saveT);
+    _saveT = setTimeout(() => {
+      try {
+        chrome.storage?.local?.set?.({ [STORE_KEY()]: {
+          handled: [...handledPreview.entries()].slice(-200),
+          sent: [...botSent].slice(-120),
+          at: Date.now(),
+        } });
+      } catch (_) {}
+    }, 800);
+  }
+  function loadMemory() {
+    try {
+      chrome.storage?.local?.get?.([STORE_KEY()], v => {
+        const m = v && v[STORE_KEY()];
+        if (!m || Date.now() - (m.at || 0) > 7 * 24 * 3600e3) return;   // stale week-old memory → ignore
+        (m.handled || []).forEach(([k, p]) => { if (!handledPreview.has(k)) handledPreview.set(k, p); });
+        (m.sent || []).forEach(s => botSent.add(s));
+        blog('memory restored:', handledPreview.size, 'chats,', botSent.size, 'sent texts');
+      });
+    } catch (_) {}
+  }
+  setTimeout(loadMemory, 400);   // after currentAccountId loads from storage
   let lastOpenedKey = '', lastOpenAt = 0; // gate: open ONE chat at a time, let it load + get answered
   const OPEN_GAP_MS = 5000;              // min ms between opening chats (so each can be replied to)
   const ANSWERED_COOLDOWN_MS = 90000;    // don't re-open a checked/answered chat for 90s
@@ -272,7 +326,9 @@
     if (!inbound) return false;                // buyer has no new message here → idle
 
     const tid = threadId();
-    const key = `${tid}::${inbound.text}`;
+    // dedupeSuffix makes photo keys unique per photo (their text is constant
+    // "[Customer sent a photo]" — without it a buyer's SECOND photo was ignored).
+    const key = `${tid}::${inbound.text}${inbound.dedupeSuffix || ''}`;
     if (seen.has(key)) return false;           // already handled this message
     // Let a freshly-opened thread settle before acting (avoids a half-loaded DOM).
     if (Date.now() - booted < CONFIG.settleMs) return false;
@@ -281,9 +337,8 @@
 
     // Conversation memory: send the recent thread (read from the DOM) so the bot
     // has context — Marketplace chats aren't stored in the bot's database.
-    // Our messages are "by You"/"Tú" (or ones we just sent); everything else in
-    // the (log-scoped) thread is the customer.
-    const roleOf = m => (m.bot || botSent.has(norm(m.text)) || /^(you|t[úu])\b/i.test((m.sender || '').trim())) ? 'You' : 'Customer';
+    // Each message's .ours came from label + bubble alignment in scanMessages.
+    const roleOf = m => (m.ours || m.bot || botSent.has(norm(m.text))) ? 'You' : 'Customer';
     const history = scanMessages().slice(-13, -1).map(m => ({ role: roleOf(m), text: m.text }));
 
     // Namespace the thread id by account so threads from different Facebook
@@ -423,24 +478,55 @@
   // message is newest → open it. This is far more reliable than bold/blue-dot
   // unread styling (which Facebook renders inconsistently), so multi-chat threads
   // are detected even when FB doesn't visibly mark the row unread.
-  function rowNeedsReply(row) {
-    const txt = (row.textContent || '').replace(/\s+/g, ' ').trim();
-    if (!txt) return false;
-    if (/(^|\s|·)(you|t[úu]):\s|\byou sent\b|\byou replied\b|\byou reacted\b|\benviaste\b|\bhas enviado\b|\bt[úu] enviaste\b/i.test(txt)) return false;
-    // Must still look like a conversation (name + a message preview).
-    return txt.length > 3;
-  }
-
-  // The row's whole preview text (name + last-message snippet + time), whitespace-
-  // collapsed. Used as a per-chat fingerprint: we only re-open a chat when this
-  // CHANGES, i.e. a genuinely new message arrived — layout-independent, so it works
-  // even when FB doesn't put a "You:" prefix or an unread dot on the row.
+  // ── Row-preview grammar, taken from THIS account's real inbox rows (captured
+  //    via mp-bridge-diag — evidence, not guesses). Observed previews:
+  //      "Narasimha … Narasimha is waiting for your response."   ← FB says: REPLY!
+  //      "Julie … Julie Blaylock sent you a message."            ← buyer's turn
+  //      "Angie … Angie sent 2 photos.Thu"                       ← buyer's turn
+  //      "M Faisal … M Faisal started this chat."                ← buyer's turn
+  //      "Taghrid … You sent an attachment.Tue"                  ← OUR turn
+  //      "Keith … Hi Keith! Just checking in to s…"              ← OUR reply, shown
+  //         RAW with NO "You:" prefix — this is why prefix-based detection failed.
+  //      "Sean … HiMon"                                          ← buyer's raw text
+  //    So: explicit buyer markers → needs reply. Explicit "You sent…" → skip.
+  //    Raw text is undecidable from the row alone → botSent memory + the
+  //    preview-change fingerprint decide.
   function rowPreview(row) {
     return (row && row.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 160);
   }
-  // "We clearly had the last word here" — a fast skip when FB does show a You: prefix.
-  function weRepliedLast(prev) {
-    return /(^|\s|·)(you|t[úu]):\s|\byou sent\b|\byou replied\b|\byou reacted\b|\benviaste\b|\bhas enviado\b/i.test(prev || '');
+  // NOTE: the row's textContent concatenates name/title/preview with NO spaces
+  // ("ShanuYou sent an attachment.Tue"), so `\b` before a word does NOT work —
+  // "uY" has no word boundary. FB capitalizes "You", so match it case-SENSITIVELY
+  // with no leading boundary.
+  // FB explicitly marks these as the buyer's turn.
+  function rowBuyerTurn(prev) {
+    const p = String(prev || '');
+    if (/You sent (a|\d+|an)\b/.test(p)) return false;          // "You sent 2 photos" is OURS
+    return /sent you a message|is waiting for your response|started this chat|sent (a|\d+) photos?|sent an attachment|te envi[oó]/i.test(p);
+  }
+  // FB explicitly marks these as OUR turn (case-sensitive "You" — see note above).
+  function rowOurTurn(prev) {
+    const p = String(prev || '');
+    return /You (sent|replied|reacted)\b/.test(p) || /(^|\s|·)You:\s/.test(p)
+        || /Enviaste\b|Has enviado\b|T[úu]:\s/.test(p);
+  }
+  // Our reply shown RAW (no "You:" prefix — observed for every bot reply in this
+  // layout) — recognize it because we REMEMBER every text we sent (botSent) and
+  // look for a sent-text's opening inside the preview. 20 chars is long enough to
+  // be unambiguous and short enough to survive FB's preview truncation.
+  function rowMatchesBotSent(prev) {
+    const tail = norm(prev).slice(-110);
+    if (tail.length < 12) return false;
+    for (const s of botSent) {
+      if (!s || s.length < 12) continue;
+      if (tail.includes(s.slice(0, 20))) return true;
+    }
+    return false;
+  }
+  function rowNeedsReply(row) {   // kept for dispatchNext()'s re-check
+    const prev = rowPreview(row);
+    if (rowOurTurn(prev) || rowMatchesBotSent(prev)) return false;
+    return rowBuyerTurn(prev) || prev.length > 3;
   }
 
   // Compact description of a candidate row (for calibration diagnostics).
@@ -587,20 +673,23 @@
       lastScanAt = Date.now();
       if (!onChatPage()) return;
       const all = conversationRows();
-      // Open a chat ONLY when its preview changed since we last handled it (a new
-      // message) — not every chat every sweep. This is layout-independent: it
-      // doesn't rely on FB marking the row unread or printing a "You:" prefix.
-      // Skips: (a) chats where we clearly replied last, (b) chats whose preview is
-      // unchanged since we handled it, (c) chats opened in the last RECENT_OPEN_MS.
+      // Selection ladder (from the observed row grammar — see rowBuyerTurn):
+      //   1. FB explicitly says OUR turn ("You sent…")            → skip + remember
+      //   2. Preview matches a reply WE sent (raw, no "You:")     → skip + remember
+      //   3. FB explicitly says buyer's turn ("sent you a message",
+      //      "is waiting for your response", "sent N photos", …)  → open
+      //   4. Raw text (undecidable) → open only if the preview CHANGED since we
+      //      last handled this chat (a genuinely new message).
       const rows = all.filter(r => {
         const prev = rowPreview(r);
         if (prev.length < 3) return false;
         const k = rowKey(r);
-        if (weRepliedLast(prev)) { handledPreview.set(k, prev); return false; }
-        if (handledPreview.get(k) === prev) return false;      // unchanged since handled → nothing new
+        if (rowOurTurn(prev) || rowMatchesBotSent(prev)) { handledPreview.set(k, prev); return false; }
         const t = threadState.get(k);
-        if (t && Date.now() - t < RECENT_OPEN_MS) return false; // just handled → let the preview settle
-        return true;
+        if (t && Date.now() - t < RECENT_OPEN_MS) return false; // just opened → let it settle
+        if (rowBuyerTurn(prev)) return true;                    // FB says buyer waits → open (even if
+                                                                //   unchanged: retries a failed reply, paced)
+        return handledPreview.get(k) !== prev;                  // raw text → open only on CHANGE
       }).slice(0, MAX_CHATS_PER_CYCLE);
       reportDiag({
         inbox: { rows: all.length, toOpen: rows.length },
@@ -625,6 +714,7 @@
         // reopen it until a new customer message changes the preview again.
         const cur = conversationRows().find(r => rowKey(r) === k);
         handledPreview.set(k, cur ? rowPreview(cur) : 'handled_' + Date.now());
+        saveMemory();
       }
       pruneMemory();
     } catch (e) { console.warn('[FBM bridge]', e); }
@@ -641,6 +731,7 @@
     }
 
     botSent.add(norm(text));            // never answer our own reply (name-collision safe)
+    saveMemory();                       // survive a page refresh (raw previews match via botSent)
     setStatus('busy', 'Sending…');
 
     // Type the reply ONCE.
