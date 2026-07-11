@@ -57,11 +57,11 @@
     staleScanMs: 15000,      // no scan in this long → show "Reconnecting" + self-heal
     stuckMs: 20000,          // pending on ONE chat this long w/o replying → skip it, scan inbox
     // Facebook's realtime push silently dies in a long-running tab, so the inbox
-    // stops receiving new messages in the DOM until a reload. We therefore
-    // PROACTIVELY refresh the inbox after this long idle (no buyer waiting), rather
-    // than treating a reload as a rare last resort — a dead realtime channel is the
-    // normal steady state, not an exception.
-    reloadIdleStaleMs: 240000,  // proactively refresh inbox after ~4 min idle (FB realtime push dies silently)
+    // stops receiving new messages in the DOM until a reload. So we reload the
+    // inbox every ~90-135s of quiet (base + random jitter) — a dead realtime
+    // channel can never hide a new message for long.
+    reloadIdleStaleMs: 90000,   // base quiet period before the proactive inbox reload
+    reloadJitterMs: 45000,      // random extra so reloads land every ~90-135s, not on a robotic beat
   };
 
   const SEL = (window.FBM_SELECTORS && window.FBM_SELECTORS.chat) || {};
@@ -75,6 +75,9 @@
   // Health / monitoring state — the watchdog uses these to detect a stalled listener.
   let lastScanAt = 0, lastReplyAt = 0, lastActionAt = 0, lastDetectAt = 0, tickStartedAt = 0;
   let lastReloadAt = Date.now();      // page load counts as the last inbox re-sync
+  // When the next proactive inbox reload is due (re-initialized on every page load,
+  // since the script reboots with the page). Jittered so reloads aren't clockwork.
+  let nextReloadAt = Date.now() + CONFIG.reloadIdleStaleMs + Math.random() * CONFIG.reloadJitterMs;
 
   chrome.storage?.local?.get?.(['mpAutoSend', 'fbmAccountId'], v => {
     if (typeof v?.mpAutoSend === 'boolean') CONFIG.autoSend = v.mpAutoSend;
@@ -1001,19 +1004,31 @@
 
   // Proactive inbox refresh. FB's realtime push silently dies in a long-running tab,
   // so new messages stop appearing in the DOM until a reload — that's the normal
-  // steady state, not an exception. So after ~4 min idle we refresh, UNLESS a buyer
-  // is explicitly waiting (never reload mid-answer). Flush memory first so a reload
-  // doesn't lose handledPreview/botSent.
+  // steady state, not an exception. Reload every ~90-135s of quiet, STARVATION-PROOF:
+  // a visible buyer-turn row defers the reload ONCE (giving the sweep a chance at it),
+  // but if it's still there next time we reload anyway — a permanently-buyer-turn row
+  // (e.g. an unanswerable "sent you a message" thread) can never block reloads forever.
+  // Memory is flushed synchronously first so a reload never loses handledPreview/botSent.
   function maybeAutoRefresh() {
     if (!onChatPage()) return;
-    if (ticking) return;                                  // never reload mid-tick
-    if (Date.now() - lastReloadAt <= CONFIG.reloadIdleStaleMs) return;   // not idle long enough
-    if (conversationRows().some(r => rowBuyerTurn(rowPreview(r)))) return;  // a buyer is waiting → handle it, don't reload
-    lastReloadAt = Date.now();                            // (reset on the fresh page load anyway)
-    blog('proactive inbox refresh (idle, no buyer waiting) — FB realtime push likely stale');
+    if (ticking) return;                              // never mid-sweep
+    if (Date.now() < nextReloadAt) return;
+    // Give the sweep ONE chance at visible buyer-turn rows, but never starve:
+    // if a buyer-turn row is visible and a sweep ran recently, push the reload
+    // back a little; if it is still there next time, reload anyway.
+    const buyerWaiting = conversationRows().some(r => rowBuyerTurn(rowPreview(r)));
+    if (buyerWaiting && Date.now() - lastCycleAt < CYCLE_GAP_MS * 2 && !maybeAutoRefresh._deferredOnce) {
+      maybeAutoRefresh._deferredOnce = true;
+      nextReloadAt = Date.now() + 15000;
+      return;
+    }
+    maybeAutoRefresh._deferredOnce = false;
+    blog('proactive inbox refresh — re-syncing (FB realtime push goes stale)');
     setStatus('busy', 'Re-syncing inbox…');
     flushMemoryNow();
-    location.reload();
+    try { bgFetch('/api/debug', { method: 'POST', body: { kind: 'mp-reload', account: currentAccountId, url: location.href } }); } catch (_) {}
+    lastReloadAt = Date.now();                        // (reset on the fresh page load anyway)
+    setTimeout(() => location.reload(), 600);         // give the bgFetch a beat to leave
   }
 
   // Master watchdog: ALWAYS runs (independent of `active`), so monitoring recovers
@@ -1042,4 +1057,11 @@
   }, CONFIG.watchdogMs);
 
   if (onChatPage()) activate();
+
+  // Boot marker for observability: every page (re)load reports itself to the
+  // dashboard, so reload cadence and dead tabs are visible from /api/debug logs.
+  // Delayed because currentAccountId loads async from chrome.storage.
+  setTimeout(() => {
+    try { bgFetch('/api/debug', { method: 'POST', body: { kind: 'mp-boot', account: currentAccountId, url: location.href } }); } catch (_) {}
+  }, 1500);
 })();
