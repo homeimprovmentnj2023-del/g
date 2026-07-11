@@ -22,6 +22,7 @@ const db      = require('./db');
 const ai      = require('./ai');
 const brain   = require('./brain');
 const sanitize = require('./sanitize');
+const zip     = require('./zip');
 
 const app  = express();
 const PORT = process.env.PORT || 3333;
@@ -461,10 +462,15 @@ async function queueJobFromTemplate(tpl, extra = {}) {
   }
   // Route the job to the account that owns this ZIP (if multi-account is set up).
   const acct = db.findAccountForZip(tpl.location);
+  // Resolve the ZIP to its real city+state (cached) so the extension can type the
+  // exact place — this is what makes location selection reliable without manual help.
+  let zi = null;
+  try { zi = await zip.resolveZip(tpl.location); } catch (_) {}
   return db.createJob({
     template_id: tpl.id, title, price: tpl.price ? String(tpl.price) : '',
     description, location: tpl.location || '', category: tpl.category || '',
     condition: tpl.condition || '', photos: photosForJob(tpl),
+    location_city: zi ? zi.city : '', location_state: zi ? zi.state : '', location_full: zi ? zi.full : '',
     delete_url: extra.delete_url || null,
     account_id: acct ? acct.id : null,
   });
@@ -785,6 +791,25 @@ app.post('/api/heartbeat', (req, res) => {
     heartbeats.set(String(id), { at: Date.now(), name: a ? a.name : `Account ${id}` });
   }
   res.json({ ok: true });
+});
+
+// Resolve one ZIP → { city, state, name, full } (cached forever after first hit).
+app.get('/api/zip/:zip', async (req, res) => {
+  const info = await zip.resolveZip(req.params.zip);
+  if (!info) return res.status(400).json({ error: 'invalid zip' });
+  res.json(info);
+});
+
+// Pre-warm the ZIP cache for every ZIP the templates use, so the brain KNOWS them
+// all up front and the extension never has to gamble on FB's bare-ZIP autocomplete.
+app.post('/api/zips/prewarm', async (_req, res) => {
+  const zips = [...new Set(db.getTemplates().map(t => zip.normalizeZip(t.location)).filter(Boolean))];
+  let resolved = 0, failed = [];
+  for (const z of zips) {
+    const info = await zip.resolveZip(z);
+    if (info && info.city) resolved++; else failed.push(z);
+  }
+  res.json({ total: zips.length, resolved, cached: Object.keys(db.getZipCache()).length, failed });
 });
 
 // Which Chrome profiles are actually reporting in? A job only ever posts for an

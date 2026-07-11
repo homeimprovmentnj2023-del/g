@@ -283,6 +283,9 @@ async function runPublishJob(job) {
         price:       job.price,
         description: job.description,
         location:    job.location,
+        location_city:  job.location_city || '',   // authoritative place for this ZIP
+        location_state: job.location_state || '',
+        location_full:  job.location_full || '',
         category:    job.category,
         condition:   job.condition,
         photos:      photosForPage,

@@ -18,6 +18,7 @@ const empty = {
   templates: [], listings: [], listing_events: [],
   competitors: [], ai_suggestions: [], post_queue: [], logs: [], schedules: [],
   repost_history: [], debug_snapshots: [], accounts: [], brain_actions: [],
+  zip_cache: {},   // "95032" -> { city:"Los Gatos", state:"CA", name:"California" } — resolved once, known forever
   settings: {
     auto_repost: false, ai_rewrite: false,
     // Autonomous orchestrator master switch — OFF by default. When false the
@@ -191,6 +192,9 @@ module.exports = {
       id: nextId('post_queue'), template_id: j.template_id || null,
       title: j.title, price: j.price || '', description: j.description || '',
       location: j.location || '', category: j.category || '', photos: j.photos || '[]',
+      // Authoritative place for this ZIP so the extension types the exact "City, ST"
+      // instead of gambling on Facebook's bare-ZIP autocomplete.
+      location_city: j.location_city || '', location_state: j.location_state || '', location_full: j.location_full || '',
       delete_url: j.delete_url || null,   // if set, delete this old listing before posting
       delete_only: j.delete_only === true, // if true, just delete delete_url and do NOT post
       account_id: j.account_id != null ? j.account_id : null, // which FB account/profile posts it
@@ -270,6 +274,11 @@ module.exports = {
   },
   deleteSchedule: (id) => { data.schedules = data.schedules.filter(s => s.id !== Number(id)); saveNow(); },
   saveSchedules: () => saveNow(),
+
+  // ── ZIP cache (authoritative city/state per ZIP; resolved once, kept forever) ──
+  getZipInfo: (zip) => { const z = String(zip || '').trim(); return (z && data.zip_cache[z]) || null; },
+  setZipInfo: (zip, info) => { const z = String(zip || '').trim(); if (z && info) { data.zip_cache[z] = info; saveNow(); } return info; },
+  getZipCache: () => ({ ...data.zip_cache }),
 
   // ── Settings ──────────────────────────────────────────────────────────────────
   getSettings: () => ({ ...empty.settings, ...data.settings }),

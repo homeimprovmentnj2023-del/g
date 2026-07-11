@@ -615,14 +615,21 @@ window.FBMAutofill = (() => {
   // replace an already-correct pick with a wrong one.
   let locationDone = '';
 
-  async function fillLocation(value) {
-    if (!value) return false;
-    if (locationDone && locationDone === String(value).trim()) return true;   // already set — don't clobber
+  // `place` (from the backend's authoritative ZIP resolver) = { city, state, full }.
+  // Knowing the real city+state lets us type the EXACT place, which Facebook
+  // autocompletes cleanly — instead of gambling on a bare 5-digit ZIP that FB also
+  // matches to cities in Brazil/Italy and returns in an unpredictable order.
+  async function fillLocation(value, place) {
+    const raw = String(value || '').trim();
+    const zip = (raw.match(/\b\d{5}\b/) || [])[0] || '';
+    const city = place && place.city ? String(place.city).trim() : '';
+    const state = (place && place.state ? String(place.state).trim() : '') || stateForZip(zip);
+    if (!raw && !city) return false;
+
+    const doneKey = raw || `${city}, ${state}`;
+    if (locationDone && locationDone === doneKey) return true;   // already set — don't clobber
     const el = findInput(LABELS.location);
     if (!el) return false; // location field not on this page
-
-    const raw = String(value).trim();
-    const zip = (raw.match(/\b\d{5}\b/) || [])[0] || '';
 
     const typeIn = async (text, waitMs) => {
       el.focus();
@@ -635,58 +642,56 @@ window.FBMAutofill = (() => {
       await sleep(waitMs);
     };
 
-    // We ONLY post in the United States, in the state the ZIP actually belongs to.
-    // Accept a suggestion only when it can be VERIFIED:
-    //   • it contains the ZIP we asked for, or
-    //   • it sits in the state that ZIP belongs to (e.g. 11234 → "Brooklyn, NY"), or
-    //   • it is the ONLY US suggestion offered (unambiguous).
-    // Otherwise do NOT guess — blindly taking the first US row (the old `us[0]`) is
-    // exactly how listings landed in the wrong state. A foreign row is never confirmed.
-    const expectState = stateForZip(zip);
+    // What to type, best first: the exact "City, ST" (Facebook resolves this to the
+    // one correct US city), then the bare ZIP as a fallback.
+    const queries = [];
+    if (city && state) queries.push(`${city}, ${state}`);
+    if (zip) queries.push(zip);
+    if (!queries.length && raw) queries.push(raw);
+
+    const expectCity = city.toLowerCase();
+    // Verify a suggestion before confirming it. Never guess a wrong state; never
+    // confirm a foreign row (same 5-digit ZIP exists abroad).
     const pickVerified = () => {
       const us = locationSuggestions().filter(o => isUSLocation(o.textContent || ''));
       if (!us.length) return null;
+      if (expectCity && state) {   // best: matches the KNOWN city and state
+        const both = us.find(o => { const t = (o.textContent || '').toLowerCase(); return t.includes(expectCity) && suggestionInState(o.textContent || '', state); });
+        if (both) return both;
+      }
       if (zip) { const exact = us.find(o => (o.textContent || '').includes(zip)); if (exact) return exact; }
-      if (expectState) { const inState = us.find(o => suggestionInState(o.textContent || '', expectState)); if (inState) return inState; }
+      if (state) { const inState = us.find(o => suggestionInState(o.textContent || '', state)); if (inState) return inState; }
       return us.length === 1 ? us[0] : null;
     };
 
-    // Wait for Facebook to actually return suggestions instead of sleeping a fixed
-    // amount — a slow autocomplete was making good ZIPs (e.g. 20814) fail at random.
     const waitForSuggestions = async (ms) => {
       const t0 = Date.now();
-      while (Date.now() - t0 < ms) {
-        if (locationSuggestions().length) return true;
-        await sleep(200);
-      }
+      while (Date.now() - t0 < ms) { if (locationSuggestions().length) return true; await sleep(200); }
       return false;
     };
 
-    // Re-type (progressively more patient) rather than appending a ", United States"
-    // hint — that hint ended up typed into the box and skewed the suggestions.
-    // Extra attempts + backoff because rapid back-to-back lookups get throttled by
-    // Facebook's autocomplete, which is what makes a good ZIP fail intermittently.
     let lastSeen = [];
-    for (let attempt = 0; attempt < 4; attempt++) {
-      await typeIn(raw, 400 + attempt * 200);
-      await waitForSuggestions(3000 + attempt * 1500);
-      let pick = pickVerified();
-      if (!pick) { await sleep(1200); pick = pickVerified(); }
-      if (pick) {
-        const chosen = (pick.textContent || '').trim();
-        realClick(pick);
-        if (pick.firstElementChild) realClick(pick.firstElementChild);
-        await sleep(900);
-        locationDone = raw;
-        log('location', 'success', `selected US location "${chosen}" for "${raw}"`);
-        return true;
+    for (const q of queries) {
+      for (let attempt = 0; attempt < 3; attempt++) {
+        await typeIn(q, 400 + attempt * 200);
+        await waitForSuggestions(3000 + attempt * 1500);   // wait for results (beats fixed sleeps under throttling)
+        let pick = pickVerified();
+        if (!pick) { await sleep(1000); pick = pickVerified(); }
+        if (pick) {
+          const chosen = (pick.textContent || '').trim();
+          realClick(pick);
+          if (pick.firstElementChild) realClick(pick.firstElementChild);
+          await sleep(900);
+          locationDone = doneKey;
+          log('location', 'success', `selected "${chosen}" for "${doneKey}" (typed "${q}")`);
+          return true;
+        }
+        lastSeen = locationSuggestions().map(o => (o.textContent || '').trim().slice(0, 40)).filter(Boolean);
+        if (attempt < 2) await sleep(1200 + attempt * 800);   // back off before retrying a throttled field
       }
-      lastSeen = locationSuggestions().map(o => (o.textContent || '').trim().slice(0, 40)).filter(Boolean);
-      if (attempt < 3) await sleep(1500 + attempt * 1000);   // back off before retrying a throttled field
     }
 
-    // Log what FB actually offered so a persistent miss can be diagnosed precisely.
-    log('location', 'error', `no US suggestion for "${raw}" (expected ${expectState || '?'}) — saw: [${lastSeen.slice(0, 6).join(' | ') || 'nothing'}]`);
+    log('location', 'error', `no US suggestion for "${doneKey}" (expected ${state || '?'}) — saw: [${lastSeen.slice(0, 6).join(' | ') || 'nothing'}]`);
     return false;
   }
 
@@ -925,8 +930,10 @@ window.FBMAutofill = (() => {
       const photos = typeof template.photos === 'string' ? safeJSON(template.photos) : (template.photos || []);
       const photoOk = await uploadImages(photos);
 
-      // Location on the first page (if present)
-      await fillLocation(template.location);
+      // Location on the first page (if present). Pass the backend's authoritative
+      // city/state so we type the exact place instead of gambling on the bare ZIP.
+      const place = { city: template.location_city, state: template.location_state, full: template.location_full };
+      await fillLocation(template.location, place);
 
       await sleep(800);
 
@@ -950,7 +957,7 @@ window.FBMAutofill = (() => {
         if (block) { log('navigate', 'block', block); showBanner('Facebook blocked this listing: ' + block, 'error'); await flushLogs(); return { ok: false, blocked: true, error: 'Facebook blocked this listing: ' + block }; }
 
         // The location/ZIP step often appears after Next — fill it if shown.
-        await fillLocation(template.location);
+        await fillLocation(template.location, place);
 
         if (findClickableByText(PUBLISH_WORDS, ['button'])) break; // ready to publish
 
