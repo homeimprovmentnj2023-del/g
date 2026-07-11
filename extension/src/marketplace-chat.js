@@ -1023,13 +1023,83 @@
       return;
     }
     maybeAutoRefresh._deferredOnce = false;
-    blog('proactive inbox refresh — re-syncing (FB realtime push goes stale)');
+    doResync('idle-timer');
+  }
+
+  // Shared re-sync: flush memory, log WHY, then reload. Guarded so it can't loop
+  // (never mid-sweep; min 8s between reloads). Both the idle timer and the
+  // realtime title trigger funnel through here.
+  function doResync(reason) {
+    if (ticking) return false;                         // never mid-sweep
+    if (Date.now() - lastReloadAt < 8000) return false; // don't loop
+    blog('re-sync inbox —', reason);
     setStatus('busy', 'Re-syncing inbox…');
     flushMemoryNow();
-    try { bgFetch('/api/debug', { method: 'POST', body: { kind: 'mp-reload', account: currentAccountId, url: location.href } }); } catch (_) {}
-    lastReloadAt = Date.now();                        // (reset on the fresh page load anyway)
-    setTimeout(() => location.reload(), 600);         // give the bgFetch a beat to leave
+    try { bgFetch('/api/debug', { method: 'POST', body: { kind: 'mp-reload', reason, account: currentAccountId, url: location.href } }); } catch (_) {}
+    lastReloadAt = Date.now();
+    setTimeout(() => location.reload(), 600);          // let the bgFetch beacon leave first
+    return true;
   }
+
+  // ── REAL-TIME SIGNAL RESEARCH PROBE + TRIGGER ────────────────────────────────
+  // Facebook delivers new messages over ONE realtime channel that updates the tab
+  // title, aria-live announcements, the Messenger jewel, and the bottom-right chat
+  // popup INSTANTLY — while the Marketplace inbox list (a fetch-on-load React view)
+  // lags until a reload. This probe records which source changes FIRST when a
+  // message arrives (with timestamps, to /api/debug kind 'mp-signal-probe'), so the
+  // earliest reliable source can drive detection. The tab-title unread count is the
+  // cheapest such source, so we ALSO use it as an instant re-sync trigger right now.
+  let _sigTitle = '', _sigTitleCount = 0, _sigTop = '';
+  const _sigSeen = new Set();
+  function probeSignals() {
+    if (!onChatPage()) return;
+    const nowT = Date.now();
+    try {
+      // 1) Tab title — unread-count prefix like "(3) Messenger". Earliest, cheapest.
+      if (document.title !== _sigTitle) {
+        const cnt = parseInt((document.title.match(/^\((\d+)\)/) || [])[1] || '0', 10) || 0;
+        bgFetch('/api/debug', { method: 'POST', body: { kind: 'mp-signal-probe', source: 'title', at: nowT, count: cnt, detail: document.title.slice(0, 80) } });
+        // A NEW message = the unread count went UP → re-sync the inbox immediately.
+        if (cnt > _sigTitleCount) doResync('title-unread+' + (cnt - _sigTitleCount));
+        _sigTitle = document.title; _sigTitleCount = cnt;
+      }
+      // 2) aria-live announcements — FB voices new messages here for screen readers,
+      //    often WITH the sender+text, in realtime. Prime candidate to read directly.
+      document.querySelectorAll('[aria-live="polite"],[aria-live="assertive"],[role="alert"]').forEach(el => {
+        const t = (el.textContent || '').replace(/\s+/g, ' ').trim();
+        if (t.length > 3 && t.length < 180 && !_sigSeen.has('a:' + t)) {
+          _sigSeen.add('a:' + t);
+          bgFetch('/api/debug', { method: 'POST', body: { kind: 'mp-signal-probe', source: 'aria-live', at: nowT, detail: t.slice(0, 140) } });
+        }
+      });
+      // 3) Bottom-right chat popup / toast — the source the USER sees update first.
+      //    Any dialog/complementary region low+right of center carrying chat text.
+      const vw = innerWidth, vh = innerHeight;
+      document.querySelectorAll('[role="dialog"],[role="complementary"],[data-pagelet*="Chat" i]').forEach(el => {
+        const r = el.getBoundingClientRect();
+        if (!r.width || r.bottom < vh * 0.5 || r.right < vw * 0.5) return;   // must be bottom-right
+        const labels = [el, ...el.querySelectorAll('[aria-label]')].slice(0, 10)
+          .map(n => (n.getAttribute && n.getAttribute('aria-label')) || '').filter(Boolean);
+        const txt = (el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 120);
+        const key = 'br:' + txt.slice(0, 60);
+        if (txt.length > 3 && !_sigSeen.has(key)) {
+          _sigSeen.add(key);
+          bgFetch('/api/debug', { method: 'POST', body: { kind: 'mp-signal-probe', source: 'bottom-right', at: nowT,
+            rect: { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) }, labels: labels.slice(0, 8), detail: txt } });
+        }
+      });
+      // 4) Inbox LIST change — log when the top row's preview finally updates, so we
+      //    can measure how far it lags behind the sources above (the whole point).
+      const rows = conversationRows();
+      const top = rows.length ? rowPreview(rows[0]).slice(0, 70) : '';
+      if (top && top !== _sigTop) {
+        bgFetch('/api/debug', { method: 'POST', body: { kind: 'mp-signal-probe', source: 'inbox-list', at: nowT, detail: top } });
+        _sigTop = top;
+      }
+      if (_sigSeen.size > 300) _sigSeen.clear();
+    } catch (_) {}
+  }
+  setInterval(probeSignals, 800);
 
   // Master watchdog: ALWAYS runs (independent of `active`), so monitoring recovers
   // on its own — no page refresh needed. Handles SPA navigation, re-activates if
