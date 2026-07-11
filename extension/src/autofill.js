@@ -265,6 +265,20 @@ window.FBMAutofill = (() => {
   // Improvement Supplies") often isn't rendered until you scroll to it, which is
   // why matching used to silently fall through to a fallback like "Tools". Scroll
   // the picker and re-scan before giving up.
+  // Scroll the open picker and collect every option label it renders (the list is
+  // virtualised, so this reveals options not initially in the DOM).
+  async function scrollAndCollect(tries = 12) {
+    const seen = new Set();
+    const grab = () => collectOptions().forEach(o => { const t = (o.textContent || '').trim(); if (t) seen.add(t); });
+    grab();
+    const scopes = [...document.querySelectorAll('[role="dialog"], [role="menu"], [role="listbox"]')].filter(s => !isInNav(s));
+    const scope = scopes[scopes.length - 1];
+    const scrollers = scope ? [scope, ...scope.querySelectorAll('div')].filter(e => e.scrollHeight > e.clientHeight + 20) : [];
+    for (let i = 0; i < tries; i++) { scrollers.forEach(s => { s.scrollTop += 350; }); await sleep(280); grab(); }
+    scrollers.forEach(s => { s.scrollTop = 0; }); await sleep(200);
+    return [...seen];
+  }
+
   async function matchOptionScrolling(text, tries = 8) {
     let opt = matchOption(text);
     if (opt) return opt;
@@ -294,6 +308,13 @@ window.FBMAutofill = (() => {
     const opened = await openDropdown(labels, `open ${desc}`);
     if (!opened) { log(desc, 'warn', 'could not open dropdown'); return null; }
     await sleep(800);
+
+    // Calibration: record what Facebook ACTUALLY offers, so category/condition can
+    // be matched by their real names instead of my guesses.
+    if (desc === 'category') {
+      const seen = await scrollAndCollect(20);
+      log('category', 'info', 'FB options: ' + seen.slice(0, 24).join(' | '));
+    }
 
     const search = pickerSearchInput();   // scoped to the picker — never FB's nav search
 
