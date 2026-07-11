@@ -56,12 +56,12 @@
     watchdogMs: 2500,        // master health/scan loop interval
     staleScanMs: 15000,      // no scan in this long → show "Reconnecting" + self-heal
     stuckMs: 20000,          // pending on ONE chat this long w/o replying → skip it, scan inbox
-    // Facebook's realtime push can silently drop in a long-running tab, so the
-    // inbox stops receiving new messages until a reload. Reloading is disruptive
-    // (FB restores the last-open chat), so we only do it as a RARE last resort:
-    // when the tab has been idle AND no new message has been seen for a long time
-    // (realtime likely died). Normal operation relies on realtime + the observer.
-    reloadIdleStaleMs: 600000,  // only reload after 10 min idle + no new message
+    // Facebook's realtime push silently dies in a long-running tab, so the inbox
+    // stops receiving new messages in the DOM until a reload. We therefore
+    // PROACTIVELY refresh the inbox after this long idle (no buyer waiting), rather
+    // than treating a reload as a rare last resort — a dead realtime channel is the
+    // normal steady state, not an exception.
+    reloadIdleStaleMs: 240000,  // proactively refresh inbox after ~4 min idle (FB realtime push dies silently)
   };
 
   const SEL = (window.FBM_SELECTORS && window.FBM_SELECTORS.chat) || {};
@@ -290,6 +290,18 @@
         } });
       } catch (_) {}
     }, 800);
+  }
+  // Flush memory to storage IMMEDIATELY (no debounce) — used right before a reload
+  // so handledPreview/botSent survive the page refresh instead of being lost.
+  function flushMemoryNow() {
+    clearTimeout(_saveT);
+    try {
+      chrome.storage?.local?.set?.({ [STORE_KEY()]: {
+        handled: [...handledPreview.entries()].slice(-200),
+        sent: [...botSent].slice(-120),
+        at: Date.now(),
+      } });
+    } catch (_) {}
   }
   function loadMemory() {
     try {
@@ -661,10 +673,34 @@
   //    before moving to the next. It never opens the next until the current is
   //    done, so it can't race through chats leaving them unanswered.
   const MAX_CHATS_PER_CYCLE = 5;     // the last N conversations
+  const LEARN_OPENS_PER_CYCLE = 1;   // undecidable/old chats: at most this many "learn" opens per sweep
   const CYCLE_GAP_MS = 8000;         // rest between full sweeps
   const RECENT_OPEN_MS = 25000;      // don't reopen a just-handled chat while its row preview lags
   let ticking = false;
   let lastCycleAt = 0;
+
+  // Pick the next row to open, prioritized. Explicit buyer-turn rows ("waiting for
+  // your response", "sent you a message", …) ALWAYS win and are re-evaluated after
+  // every chat, so a customer arriving mid-sweep jumps the queue. Undecidable raw-text
+  // rows that merely CHANGED are a weak "learn" fallback, budgeted to keep old chats
+  // from monopolizing a sweep. Returns { row, learn } or null.
+  function pickNextRow(learnBudgetLeft) {
+    const all = conversationRows();
+    let fallbackRow = null;
+    for (const r of all) {
+      const prev = rowPreview(r);
+      if (prev.length < 3) continue;
+      const k = rowKey(r);
+      if (rowOurTurn(prev) || rowMatchesBotSent(prev)) { handledPreview.set(k, prev); continue; }
+      const t = threadState.get(k);
+      if (t && Date.now() - t < RECENT_OPEN_MS) continue;   // just opened → let it settle
+      if (rowBuyerTurn(prev)) return { row: r, learn: false };   // explicit buyer-turn wins immediately
+      if (handledPreview.get(k) !== prev && !fallbackRow) fallbackRow = r;  // remember first changed raw row
+    }
+    if (fallbackRow && learnBudgetLeft > 0) return { row: fallbackRow, learn: true };
+    return null;
+  }
+
   async function check() {
     if (ticking) return;
     if (Date.now() - lastCycleAt < CYCLE_GAP_MS) return;   // rest between sweeps
@@ -672,33 +708,22 @@
     try {
       lastScanAt = Date.now();
       if (!onChatPage()) return;
-      const all = conversationRows();
-      // Selection ladder (from the observed row grammar — see rowBuyerTurn):
-      //   1. FB explicitly says OUR turn ("You sent…")            → skip + remember
-      //   2. Preview matches a reply WE sent (raw, no "You:")     → skip + remember
-      //   3. FB explicitly says buyer's turn ("sent you a message",
-      //      "is waiting for your response", "sent N photos", …)  → open
-      //   4. Raw text (undecidable) → open only if the preview CHANGED since we
-      //      last handled this chat (a genuinely new message).
-      const rows = all.filter(r => {
-        const prev = rowPreview(r);
-        if (prev.length < 3) return false;
-        const k = rowKey(r);
-        if (rowOurTurn(prev) || rowMatchesBotSent(prev)) { handledPreview.set(k, prev); return false; }
-        const t = threadState.get(k);
-        if (t && Date.now() - t < RECENT_OPEN_MS) return false; // just opened → let it settle
-        if (rowBuyerTurn(prev)) return true;                    // FB says buyer waits → open (even if
-                                                                //   unchanged: retries a failed reply, paced)
-        return handledPreview.get(k) !== prev;                  // raw text → open only on CHANGE
-      }).slice(0, MAX_CHATS_PER_CYCLE);
+      // Selection ladder lives in pickNextRow() (from the observed row grammar — see
+      // rowBuyerTurn): explicit OUR-turn / bot-sent rows are skipped + remembered,
+      // explicit buyer-turn rows open first, undecidable raw rows open only on CHANGE
+      // and only within the per-sweep learn budget. The queue is re-evaluated after
+      // EVERY chat, so a buyer arriving mid-sweep is served next.
       reportDiag({
-        inbox: { rows: all.length, toOpen: rows.length },
-        rowsSample: all.slice(0, 8).map(r => ({ text: rowPreview(r).slice(0, 70), open: rows.includes(r) })),
+        inbox: { rows: conversationRows().length },
+        rowsSample: conversationRows().slice(0, 8).map(r => ({ text: rowPreview(r).slice(0, 70) })),
         openThread: keyOf(conversationInfo().title),
       });
-      if (!rows.length) { setStatus('ok', 'Monitoring inbox'); return; }   // nothing new → stay idle
-      for (const row of rows) {
+      let opens = 0, learnOpens = 0;
+      while (opens < MAX_CHATS_PER_CYCLE) {
         if (!onChatPage()) break;
+        const next = pickNextRow(LEARN_OPENS_PER_CYCLE - learnOpens);
+        if (!next) break;
+        const row = next.row;
         const k = rowKey(row);
         setStatus('busy', 'Checking chat…');
         threadState.set(k, Date.now());                  // remember we handled this chat
@@ -715,7 +740,9 @@
         const cur = conversationRows().find(r => rowKey(r) === k);
         handledPreview.set(k, cur ? rowPreview(cur) : 'handled_' + Date.now());
         saveMemory();
+        opens++; if (next.learn) learnOpens++;
       }
+      if (!opens) setStatus('ok', 'Monitoring inbox');   // nothing new → stay idle
       pruneMemory();
     } catch (e) { console.warn('[FBM bridge]', e); }
     finally { ticking = false; lastCycleAt = Date.now(); tickStartedAt = 0; }
@@ -972,21 +999,20 @@
     return true;
   }
 
-  // Reload is a RARE last resort. Facebook restores the last-open chat on reload,
-  // which fights with clean inbox monitoring, so we avoid it during normal use and
-  // only reload when the tab has been idle AND no new message has been seen for a
-  // long time — i.e. realtime push has most likely died and nothing else will
-  // recover it. When realtime is healthy (messages keep arriving), we never reload.
+  // Proactive inbox refresh. FB's realtime push silently dies in a long-running tab,
+  // so new messages stop appearing in the DOM until a reload — that's the normal
+  // steady state, not an exception. So after ~4 min idle we refresh, UNLESS a buyer
+  // is explicitly waiting (never reload mid-answer). Flush memory first so a reload
+  // doesn't lose handledPreview/botSent.
   function maybeAutoRefresh() {
-    if (!onChatPage() || !inboxIsIdle()) return;
-    const now = Date.now();
-    const sinceReload = now - lastReloadAt;
-    const sinceInbound = lastDetectAt ? now - lastDetectAt : (now - booted);
-    if (sinceReload < CONFIG.reloadIdleStaleMs) return;   // don't reload often
-    if (sinceInbound < CONFIG.reloadIdleStaleMs) return;  // recent activity → realtime OK, skip
-    lastReloadAt = now;                                   // (reset on the fresh page load anyway)
-    blog('safety reload (idle+stale)', 'noNewMsgFor=' + Math.round(sinceInbound / 1000) + 's');
+    if (!onChatPage()) return;
+    if (ticking) return;                                  // never reload mid-tick
+    if (Date.now() - lastReloadAt <= CONFIG.reloadIdleStaleMs) return;   // not idle long enough
+    if (conversationRows().some(r => rowBuyerTurn(rowPreview(r)))) return;  // a buyer is waiting → handle it, don't reload
+    lastReloadAt = Date.now();                            // (reset on the fresh page load anyway)
+    blog('proactive inbox refresh (idle, no buyer waiting) — FB realtime push likely stale');
     setStatus('busy', 'Re-syncing inbox…');
+    flushMemoryNow();
     location.reload();
   }
 
