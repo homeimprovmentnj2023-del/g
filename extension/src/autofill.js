@@ -556,10 +556,26 @@ window.FBMAutofill = (() => {
     const hit = ZIP_PREFIX_STATE.find(([lo, hi]) => p >= lo && p <= hi);
     return hit ? hit[2] : '';
   }
-  // Is this suggestion in `st`? Facebook prints ", NY" / "· NY" in the row text.
+  // 2-letter abbr → full state name, so we can match a suggestion whether Facebook
+  // prints "Forest Hills, NY" OR "Forest Hills, New York".
+  const STATE_ABBR_TO_NAME = {
+    AL:'alabama',AK:'alaska',AZ:'arizona',AR:'arkansas',CA:'california',CO:'colorado',CT:'connecticut',
+    DE:'delaware',FL:'florida',GA:'georgia',HI:'hawaii',ID:'idaho',IL:'illinois',IN:'indiana',IA:'iowa',
+    KS:'kansas',KY:'kentucky',LA:'louisiana',ME:'maine',MD:'maryland',MA:'massachusetts',MI:'michigan',
+    MN:'minnesota',MS:'mississippi',MO:'missouri',MT:'montana',NE:'nebraska',NV:'nevada',NH:'new hampshire',
+    NJ:'new jersey',NM:'new mexico',NY:'new york',NC:'north carolina',ND:'north dakota',OH:'ohio',
+    OK:'oklahoma',OR:'oregon',PA:'pennsylvania',RI:'rhode island',SC:'south carolina',SD:'south dakota',
+    TN:'tennessee',TX:'texas',UT:'utah',VT:'vermont',VA:'virginia',WA:'washington',WV:'west virginia',
+    WI:'wisconsin',WY:'wyoming',DC:'district of columbia',
+  };
+  // Is this suggestion in state `st`? Matches the abbreviation ("· NY") OR the full
+  // name ("New York") — FB uses either depending on the row.
   function suggestionInState(text, st) {
     if (!st) return false;
-    return new RegExp(`(^|[,·\\s])${st}\\b`).test(String(text || ''));
+    const t = String(text || '');
+    if (new RegExp(`(^|[,·\\s])${st}\\b`).test(t)) return true;
+    const full = STATE_ABBR_TO_NAME[st];
+    return !!full && t.toLowerCase().includes(full);
   }
 
   function isUSLocation(text) {
@@ -646,11 +662,14 @@ window.FBMAutofill = (() => {
 
     // Re-type (progressively more patient) rather than appending a ", United States"
     // hint — that hint ended up typed into the box and skewed the suggestions.
-    for (let attempt = 0; attempt < 3; attempt++) {
-      await typeIn(raw, 400);
-      await waitForSuggestions(attempt ? 5000 : 3000);
+    // Extra attempts + backoff because rapid back-to-back lookups get throttled by
+    // Facebook's autocomplete, which is what makes a good ZIP fail intermittently.
+    let lastSeen = [];
+    for (let attempt = 0; attempt < 4; attempt++) {
+      await typeIn(raw, 400 + attempt * 200);
+      await waitForSuggestions(3000 + attempt * 1500);
       let pick = pickVerified();
-      if (!pick) { await sleep(1000); pick = pickVerified(); }
+      if (!pick) { await sleep(1200); pick = pickVerified(); }
       if (pick) {
         const chosen = (pick.textContent || '').trim();
         realClick(pick);
@@ -660,9 +679,12 @@ window.FBMAutofill = (() => {
         log('location', 'success', `selected US location "${chosen}" for "${raw}"`);
         return true;
       }
+      lastSeen = locationSuggestions().map(o => (o.textContent || '').trim().slice(0, 40)).filter(Boolean);
+      if (attempt < 3) await sleep(1500 + attempt * 1000);   // back off before retrying a throttled field
     }
 
-    log('location', 'error', `no US suggestion for "${raw}" in expected state ${expectState || '?'} — refusing to guess`);
+    // Log what FB actually offered so a persistent miss can be diagnosed precisely.
+    log('location', 'error', `no US suggestion for "${raw}" (expected ${expectState || '?'}) — saw: [${lastSeen.slice(0, 6).join(' | ') || 'nothing'}]`);
     return false;
   }
 
