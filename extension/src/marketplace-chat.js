@@ -285,12 +285,16 @@
   //    follow-up messages always re-enter monitoring. ──────────────────────────
   const threadState = new Map();         // rowKey -> last time we opened that row
   const handledPreview = new Map();      // rowKey -> the row-preview text we last handled (open only on CHANGE)
+  const retryCount = new Map();          // rowKey -> failed reply attempts (give up after 3)
   const answered = new Map();            // rowKey -> when we opened it and found NOTHING to reply
 
   // ── Persist chat memory across page refreshes. Without this, a reload wiped
   //    handledPreview/botSent and the bot re-opened every old chat once ("opening
   //    chats from before") before re-learning their state. ────────────────────
-  const STORE_KEY = () => 'mpChatMemory_' + (currentAccountId || 'default');
+  // v2: key bumped to DISCARD memory poisoned by earlier buggy rounds — chats that
+  // were opened while the sender-classifier was wrong got fingerprinted as
+  // "handled" without ever being answered, permanently skipping real customers.
+  const STORE_KEY = () => 'mpChatMemory2_' + (currentAccountId || 'default');
   let _saveT = null;
   function saveMemory() {
     clearTimeout(_saveT);
@@ -815,14 +819,36 @@
           replied = await handleOpenConversation();      // replies iff the customer had the last word
           if (replied) { lastReplyAt = Date.now(); await sleep(1200); }
         } catch (e) { console.warn('[FBM bridge] reply', e && e.message); }
+        // VERIFY before marking handled: "handled" must mean we replied, or we
+        // confirmed in-thread that no customer message is pending. If a reply is
+        // still pending (send/backend failed), do NOT record — the chat must be
+        // retried, not silently skipped forever (that bug buried real customers).
+        let stillPending = false;
+        if (!replied) { try { stillPending = !!(conversationInfo().title && latestInbound()); } catch (_) {} }
         closeChat();                                     // always close / deselect
         await sleep(700);
-        // Record this chat's CURRENT preview so we don't reopen it until a NEW
-        // customer message changes the preview. (If we opened it and there was
-        // genuinely nothing to reply, recording is still correct — it was ours.)
-        const cur = conversationRows().find(r => rowKey(r) === k);
-        handledPreview.set(k, cur ? rowPreview(cur) : 'handled_' + Date.now());
-        saveMemory();
+        if (stillPending) {
+          const tries = (retryCount.get(k) || 0) + 1;
+          retryCount.set(k, tries);
+          if (tries < 3) {
+            blog('reply pending on', k, '— attempt', tries, 'failed, will retry');
+          } else {
+            // Can't answer after 3 attempts (empty bot reply, dead compose box…):
+            // give up on THIS message so the sweep isn't stuck; a new message re-opens it.
+            blog('giving up on', k, 'after', tries, 'attempts');
+            const cur0 = conversationRows().find(r => rowKey(r) === k);
+            handledPreview.set(k, cur0 ? rowPreview(cur0) : 'handled_' + Date.now());
+            retryCount.delete(k);
+            saveMemory();
+          }
+        } else {
+          // Replied, or verified nothing pending → record the chat's CURRENT stable
+          // preview so it isn't reopened until a NEW customer message changes it.
+          const cur = conversationRows().find(r => rowKey(r) === k);
+          handledPreview.set(k, cur ? rowPreview(cur) : 'handled_' + Date.now());
+          retryCount.delete(k);
+          saveMemory();
+        }
         opens++;
       }
       if (!opens) setStatus('ok', 'Monitoring inbox');   // nothing new → stay idle
