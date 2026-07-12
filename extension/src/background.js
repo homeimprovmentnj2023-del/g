@@ -12,12 +12,14 @@ chrome.runtime.onInstalled.addListener(() => {
   chrome.alarms.create('pollQueue',     { periodInMinutes: QUEUE_POLL_SECONDS / 60 });
   chrome.alarms.create('heartbeat',     { periodInMinutes: 3 });
   chrome.alarms.create('syncListings',  { delayInMinutes: 2, periodInMinutes: 60 });
+  chrome.alarms.create('mpChatTick',    { periodInMinutes: 0.5 });
   console.log('[FBM] Installed. Monitoring every', CHECK_INTERVAL_MINUTES, 'min. Queue polled every', QUEUE_POLL_SECONDS, 's.');
 });
 // Also (re)create alarms whenever the service worker starts, so a reloaded
 // extension always has them even without an explicit install event.
 chrome.alarms.create('heartbeat', { periodInMinutes: 3 });
 chrome.alarms.create('syncListings', { delayInMinutes: 2, periodInMinutes: 60 });
+chrome.alarms.create('mpChatTick', { periodInMinutes: 0.5 });
 
 // ── Alarms ────────────────────────────────────────────────────────────────────
 
@@ -26,7 +28,30 @@ chrome.alarms.onAlarm.addListener(async alarm => {
   if (alarm.name === 'pollQueue')     await processNextQueueJob();
   if (alarm.name === 'heartbeat')     await sendHeartbeat();
   if (alarm.name === 'syncListings')  await syncListings();
+  if (alarm.name === 'mpChatTick')    await mpChatTick();
 });
+
+// Drive the Marketplace chat bridge from the SERVICE WORKER. Page timers in
+// background/hidden tabs are throttled to ~1/min or frozen entirely (and Memory
+// Saver can discard the page), so the bridge's own loops only run while the user
+// is LOOKING at the tab. Alarms are not throttled by tab visibility: every tick
+// we ping each Marketplace inbox tab — an ack proves the content script is alive
+// and lets it run a sweep; no ack means the tab is discarded/stuck, so we reload
+// it to revive the bridge.
+async function mpChatTick() {
+  let tabs = [];
+  try { tabs = await chrome.tabs.query({ url: ['*://*.facebook.com/marketplace/inbox*', '*://*.facebook.com/marketplace/t/*'] }); } catch (e) { return; }
+  for (const tab of tabs) {
+    try { await chrome.tabs.update(tab.id, { autoDiscardable: false }); } catch (_) {}   // Memory Saver must not kill it
+    try {
+      const resp = await chrome.tabs.sendMessage(tab.id, { type: 'MP_TICK' });
+      if (!resp || !resp.ok) throw new Error('no ack');
+    } catch (_) {
+      // Content script dead (tab discarded/stuck) → reload the tab to revive it.
+      try { await chrome.tabs.reload(tab.id); } catch (_) {}
+    }
+  }
+}
 
 // Open this profile's "Your Listings" page, scrape every listing (id/title/status),
 // and sync to the backend so coverage + keep-alive know what's actually live.
@@ -344,6 +369,14 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   // Popup can trigger immediate publish
   if (msg.type === 'PUBLISH_NOW') {
     processNextQueueJob().then(() => sendResponse({ ok: true }));
+    return true;
+  }
+
+  // Throttle-immune sleep for content scripts: page timers in hidden tabs are
+  // throttled to ~1/min, but the service worker's are not — so the chat bridge
+  // awaits its delays HERE and stays accurately paced even in background tabs.
+  if (msg.type === 'BG_SLEEP') {
+    setTimeout(() => sendResponse({ ok: true }), Math.min(Number(msg.ms) || 0, 25000));
     return true;
   }
 

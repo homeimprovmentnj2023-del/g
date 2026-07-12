@@ -40,6 +40,20 @@
     });
   }
 
+  // Service-worker drive: background/hidden tabs get their page timers throttled
+  // to ~1/min (or frozen), so the in-page loops only run while the user is looking
+  // at the tab. The SW's 'mpChatTick' alarm pings us every 30s regardless of tab
+  // visibility; the ack proves this page is alive (no ack → the SW reloads the
+  // tab). check() has its own ticking/CYCLE_GAP_MS gates, so being driven by both
+  // the page watchdog (foreground) and SW ticks (always) is safe.
+  // (check/maybeAutoRefresh/probeSignals are hoisted function declarations.)
+  chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+    if (msg && msg.type === 'MP_TICK') {
+      sendResponse({ ok: true });                    // ack immediately: proves the page is alive
+      try { if (onChatPage()) { check(); maybeAutoRefresh(); probeSignals(); } } catch (_) {}
+    }
+  });
+
   const CONFIG = {
     // FULLY AUTOMATED: the bot types AND sends the reply with no human action.
     // Set chrome.storage key `mpAutoSend` to false if you ever want to switch to
@@ -1026,7 +1040,15 @@
     return boxEmpty || appeared;
   }
 
-  const sleep = ms => new Promise(r => setTimeout(r, ms));
+  // Throttle-immune sleep: page setTimeout in a hidden tab is throttled to ~1/min,
+  // which froze mid-sweep waits. The service worker's timers aren't throttled by
+  // tab visibility, so we await the delay THERE (BG_SLEEP) and fall back to a
+  // plain setTimeout if the SW is briefly unavailable.
+  const sleep = ms => new Promise(res => {
+    try {
+      chrome.runtime.sendMessage({ type: 'BG_SLEEP', ms }, () => { void chrome.runtime.lastError; res(); });
+    } catch (_) { setTimeout(res, ms); }
+  });
 
   // ── Monitoring lifecycle + self-healing watchdog ────────────────────────────
   let active = false;
@@ -1231,6 +1253,10 @@
   // on its own — no page refresh needed. Handles SPA navigation, re-activates if
   // needed, re-attaches a dead observer, frees a stuck tick, drives a guaranteed
   // scan every cycle (polling floor), and keeps the badge honest.
+  // NOTE: in BACKGROUND tabs this interval is throttled to ~1/min (or frozen), so
+  // the service worker's 'mpChatTick' alarm (MP_TICK message, every 30s, immune to
+  // tab visibility) is the PRIMARY driver there; this in-page loop remains for
+  // fast foreground responsiveness.
   setInterval(() => {
     try {
       if (location.pathname !== lastPath) { lastPath = location.pathname; deactivate(); }
