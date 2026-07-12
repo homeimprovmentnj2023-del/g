@@ -78,6 +78,10 @@
   // When the next proactive inbox reload is due (re-initialized on every page load,
   // since the script reboots with the page). Jittered so reloads aren't clockwork.
   let nextReloadAt = Date.now() + CONFIG.reloadIdleStaleMs + Math.random() * CONFIG.reloadJitterMs;
+  // Urgent buyer channel: a realtime event (tab-title flash / chat popup) NAMED a
+  // buyer — the sweep opens their row FIRST, without waiting for the lagging inbox
+  // list. Expires after 90s (checked in pickNextRow).
+  let urgentBuyer = '', urgentAt = 0;
 
   chrome.storage?.local?.get?.(['mpAutoSend', 'fbmAccountId'], v => {
     if (typeof v?.mpAutoSend === 'boolean') CONFIG.autoSend = v.mpAutoSend;
@@ -544,6 +548,24 @@
     } catch (_) {}
     return stripTime(row && row.textContent || '').slice(0, 160);
   }
+  // How fresh is this row's last message? Classify the LAST timestamp leaf (the
+  // same ISO_TS leaves rowPreview strips): clock time / "Nm|Nh" / "just now" →
+  // 'today'; anything else that matched ISO_TS (Yesterday, day names, "May 7",
+  // Nd/Nw) → 'old'; no timestamp leaf found → 'unknown' (treated as today
+  // downstream — the safe default is to look, not to skip).
+  function rowRecency(row) {
+    try {
+      let last = '';
+      row.querySelectorAll('*').forEach(el => {
+        if (el.children.length) return;
+        const t = (el.textContent || '').trim();
+        if (t && ISO_TS.test(t)) last = t;
+      });
+      if (!last) return 'unknown';
+      if (/^\d{1,2}:\d{2}\s*[ap]\.?m\.?$/i.test(last) || /^\d{1,2}\s*[smh]$/i.test(last) || /^just now$/i.test(last)) return 'today';
+      return 'old';
+    } catch (_) { return 'unknown'; }
+  }
   // NOTE: the row's textContent concatenates name/title/preview with NO spaces
   // ("ShanuYou sent an attachment.Tue"), so `\b` before a word does NOT work —
   // "uY" has no word boundary. FB capitalizes "You", so match it case-SENSITIVELY
@@ -716,28 +738,48 @@
   let ticking = false;
   let lastCycleAt = 0;
 
-  // Pick the next row to open. A row is the BUYER's turn (needs a reply) unless we
-  // can prove it's ours: an explicit "You sent…" marker, or a preview matching a
-  // reply we remember sending (botSent). Everything else that isn't already handled
-  // is a customer message — including plain raw text like "Hi, I need a tub deglaze"
-  // (MOST buyer messages look like this — they carry no "sent you a message" marker).
-  // Priority: an explicit buyer-turn marker ("waiting for your response", "sent you
-  // a message", "sent N photos") beats plain raw text, but BOTH get opened — up to
-  // MAX_CHATS_PER_CYCLE per sweep. No throttling: skipping real messages was the bug.
+  // Record an URGENT buyer named by a realtime event (tab-title flash / chat popup):
+  // pickNextRow serves them before everything else, no reload needed.
+  function setUrgent(name, source) {
+    const n = String(name || '').trim();
+    if (n.length <= 1) return;
+    urgentBuyer = n; urgentAt = Date.now();
+    blog('urgent buyer —', n, '(' + source + ')');
+    try { bgFetch('/api/debug', { method: 'POST', body: { kind: 'mp-urgent', source, name: n } }); } catch (_) {}
+  }
+  // Does this inbox row belong to <name>? Row previews start with the person's name.
+  function rowMatchesName(row, name) {
+    return !!(name && rowPreview(row).toLowerCase().startsWith(name.toLowerCase().slice(0, 12)));
+  }
+
+  // Pick the next row to open — ONLY conversations that genuinely need action,
+  // prioritized. Rows provably ours (explicit "You sent…" marker, or a preview
+  // matching a reply we remember sending) are always skipped + remembered.
+  //   P0: a realtime event named this buyer (urgentBuyer)     → open first
+  //   P1: FB's blue unread mark (rowIsUnread)                 → open next
+  //   P2: explicit buyer-turn marker ("waiting for your response", …)
+  //   P3: changed raw text whose timestamp says TODAY (old raw chats never reopen)
+  const MAX_SCAN_ROWS = 7;   // most-recent conversations only; older ones are never scanned
   function pickNextRow() {
-    const all = conversationRows();
-    let rawRow = null;
-    for (const r of all) {
+    if (urgentBuyer && Date.now() - urgentAt > 90000) { urgentBuyer = ''; }   // stale urgent → drop
+    const rows = conversationRows().slice(0, MAX_SCAN_ROWS);
+    let unreadRow = null, markerRow = null, rawRow = null;
+    for (const r of rows) {
       const prev = rowPreview(r);
       if (prev.length < 3) continue;
       const k = rowKey(r);
-      if (rowOurTurn(prev) || rowMatchesBotSent(prev)) { handledPreview.set(k, prev); continue; }  // ours → skip
+      if (rowOurTurn(prev) || rowMatchesBotSent(prev)) { handledPreview.set(k, prev); continue; } // provably ours
       const t = threadState.get(k);
-      if (t && Date.now() - t < RECENT_OPEN_MS) continue;        // just opened → let it settle
-      if (rowBuyerTurn(prev)) return { row: r };                 // explicit buyer-turn → highest priority
-      if (!rawRow && handledPreview.get(k) !== prev) rawRow = r;  // new/changed raw buyer text → open too
+      if (t && Date.now() - t < RECENT_OPEN_MS) continue;             // just opened — settling
+      if (urgentBuyer && rowMatchesName(r, urgentBuyer)) { urgentBuyer = ''; return { row: r, why: 'urgent' }; } // P0
+      if (!unreadRow && rowIsUnread(r)) { unreadRow = r; continue; }  // P1: FB's blue unread mark
+      if (!markerRow && rowBuyerTurn(prev)) { markerRow = r; continue; } // P2: explicit buyer marker
+      if (!rawRow && handledPreview.get(k) !== prev && rowRecency(r) !== 'old') rawRow = r; // P3: changed + today
     }
-    return rawRow ? { row: rawRow } : null;
+    if (unreadRow) return { row: unreadRow, why: 'unread' };
+    if (markerRow) return { row: markerRow, why: 'marker' };
+    if (rawRow)    return { row: rawRow,    why: 'raw-today' };
+    return null;
   }
 
   async function check() {
@@ -747,13 +789,13 @@
     try {
       lastScanAt = Date.now();
       if (!onChatPage()) return;
-      // Selection lives in pickNextRow(): our-turn / bot-sent rows are skipped, any
-      // other unhandled row (explicit buyer-turn OR plain raw customer text) is
-      // opened, up to MAX_CHATS_PER_CYCLE. Re-evaluated after EVERY chat, so a buyer
+      // Selection lives in pickNextRow(): our-turn / bot-sent rows are skipped;
+      // urgent > unread > buyer-marker > changed-raw-from-today, first 7 rows only,
+      // up to MAX_CHATS_PER_CYCLE opens. Re-evaluated after EVERY chat, so a buyer
       // arriving mid-sweep is served next.
       reportDiag({
         inbox: { rows: conversationRows().length },
-        rowsSample: conversationRows().slice(0, 8).map(r => ({ text: rowPreview(r).slice(0, 70) })),
+        rowsSample: conversationRows().slice(0, 8).map(r => ({ text: rowPreview(r).slice(0, 70), unread: rowIsUnread(r), recency: rowRecency(r) })),
         openThread: keyOf(conversationInfo().title),
       });
       let opens = 0;
@@ -763,6 +805,7 @@
         if (!next) break;
         const row = next.row;
         const k = rowKey(row);
+        blog('open', k, 'why=', next.why);
         setStatus('busy', 'Checking chat…');
         threadState.set(k, Date.now());                  // remember we handled this chat
         clickConversation(row);                          // open this conversation
@@ -1101,7 +1144,15 @@
         const cnt = parseInt((document.title.match(/^\((\d+)\+?\)/) || [])[1] || '0', 10) || 0;
         bgFetch('/api/debug', { method: 'POST', body: { kind: 'mp-signal-probe', source: 'title', at: nowT, count: cnt, detail: document.title.slice(0, 80) } });
         const messaged = document.title.match(/^(.+?)\s+messaged\b/i);
-        if (messaged) doResync('title:new-msg-from-' + messaged[1].trim().slice(0, 20));   // realtime new message
+        if (messaged) {
+          // Realtime new message naming a buyer: flag them URGENT so the sweep opens
+          // their row first. Only reload if their row is NOT in the inbox list yet —
+          // when it's already visible, opening it directly beats a page reload.
+          setUrgent(messaged[1], 'title');
+          if (!conversationRows().some(r => rowMatchesName(r, messaged[1].trim()))) {
+            doResync('title:new-msg-from-' + messaged[1].trim().slice(0, 20));
+          }
+        }
         else if (cnt > _sigTitleCount) doResync('title-unread+' + (cnt - _sigTitleCount)); // count went up
         _sigTitle = document.title; _sigTitleCount = cnt;
       }
@@ -1128,6 +1179,13 @@
           _sigSeen.add(key);
           bgFetch('/api/debug', { method: 'POST', body: { kind: 'mp-signal-probe', source: 'bottom-right', at: nowT,
             rect: { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) }, labels: labels.slice(0, 8), detail: txt } });
+          // A NEW popup line that is NOT ours → a buyer just wrote. If the dialog's
+          // own aria-label looks like a person name (1-3 words, letters, <30 chars),
+          // flag that buyer urgent so the sweep opens their row first.
+          if (!/^You\b/.test(txt) && !rowMatchesBotSent(txt)) {
+            const own = ((el.getAttribute && el.getAttribute('aria-label')) || '').trim();
+            if (own && own.length < 30 && /^[A-Za-zÀ-ÿ'.-]+(\s+[A-Za-zÀ-ÿ'.-]+){0,2}$/.test(own)) setUrgent(own, 'popup');
+          }
         }
       });
       // 4) Inbox LIST change — log when the top row's preview finally updates, so we
