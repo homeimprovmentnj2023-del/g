@@ -210,10 +210,16 @@
       const a = el.getAttribute('aria-label') || '';
       const bot = !!(el.dataset && el.dataset.fbmBot === '1');
 
-      // Text message — "…by <Sender>: <text>" OR "At <time>, <Sender>: <text>".
-      let m = a.match(/\bby\s+(.+?):\s*([\s\S]+?)\s*$/i)
-           || a.match(/^At\s+[^,]+,\s*(.+?):\s*([\s\S]+?)\s*$/i);
-      if (m && m[2] && m[2].trim() && /\bmessage\b|^At\s/i.test(a)) {
+      // Text message. Two label shapes seen live:
+      //   "… by <Sender>: <text>"                (Message sent 11:25 PM by You: …)
+      //   "At <date/time>, <Sender>: <text>"     (the date has commas AND the time a
+      //                                           colon, e.g. "…, 2026, 1:53 PM, You: …")
+      // The old "At" regex grabbed a timestamp fragment ("2026, 1") as the sender.
+      // Fix: take the LAST ", <letter-led token>: " before the text — anchoring on a
+      // LETTER skips the numeric time/date pieces ("1:53", "2026") entirely.
+      let m = a.match(/\bby\s+([^:]+?):\s*([\s\S]+?)\s*$/i);
+      if (!m) m = a.match(/[,·]\s*([A-Za-z][^,:]{0,30}?):\s*([\s\S]+?)\s*$/);
+      if (m && m[2] && m[2].trim() && /\bmessage\b|^\s*At\s/i.test(a)) {
         const sender = m[1].trim();
         const key = 'T:' + sender + ':' + m[2].trim().slice(0, 120);
         if (seenKeys.has(key)) return; seenKeys.add(key);
@@ -264,7 +270,7 @@
       try { const rs = conversationRows(); inbox = { rows: rs.length, unread: rs.filter(rowIsUnread).length }; } catch (_) {}
       bgFetch('/api/debug', { method: 'POST', body: {
         kind: 'mp-bridge-diag', url: location.href, conversation: info, inbox,
-        messages: msgs.slice(-8).map(m => ({ sender: m.sender, text: m.text.slice(0, 80), bot: m.bot, raw: m.raw })),
+        messages: msgs.slice(-8).map(m => ({ sender: m.sender, text: m.text.slice(0, 80), bot: m.bot, ours: !!m.ours, media: !!m.media, raw: m.raw })),
         ...(extra || {}),
       } });
     } catch (_) {}
@@ -322,11 +328,28 @@
   const OPEN_GAP_MS = 5000;              // min ms between opening chats (so each can be replied to)
   const ANSWERED_COOLDOWN_MS = 90000;    // don't re-open a checked/answered chat for 90s
   const keyOf = t => String(t || '').toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '').slice(0, 48);
+
+  // Facebook GLUES a relative timestamp onto the end of every row preview, and it
+  // EVOLVES for the SAME message over time: "7:42 PM" → "2h" → "Yesterday" → "Mon"
+  // → "May 7". If we keep it, an unchanged chat looks brand-new every time the clock
+  // ticks — the row's identity key and "changed?" fingerprint drift, so the bot
+  // re-opens old answered chats forever. The timestamp is its OWN leaf element, so
+  // we identify it by matching an element whose ENTIRE text is a timestamp (no
+  // glued-digit ambiguity that a text regex would hit) and drop it. TS_TAIL is a
+  // secondary cleanup for any residue.
+  const ISO_TS = /^(just now|yesterday|\d{1,2}:\d{2}\s*[ap]\.?m\.?|\d{1,2}\s*[smhdw]|(mon|tue|wed|thu|fri|sat|sun)|(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+\d{1,2})$/i;
+  const TS_TAIL = /\s*(just now|yesterday|\d{1,2}:\d{2}\s*[ap]\.?m\.?)\s*$/i;
+  function stripTime(s) {
+    let t = String(s || '').replace(/\s+/g, ' ').trim();
+    for (let i = 0; i < 2 && TS_TAIL.test(t); i++) t = t.replace(TS_TAIL, '').trim();
+    return t;
+  }
+
   function rowKey(row) {
     const a = (row.tagName === 'A' && row.getAttribute('href')) ? row : row.querySelector('a[href*="/t/"]');
     const m = a && (a.getAttribute('href') || '').match(/\/t\/(\d+)/);
     if (m) return 't' + m[1];            // most stable when available
-    return keyOf(row.getAttribute('aria-label') || row.textContent);
+    return keyOf(rowPreview(row));       // timestamp-free preview → stable identity
   }
   const blog = (...a) => { try { console.info('[FBM bridge]', ...a); } catch (_) {} };
 
@@ -506,8 +529,20 @@
   //    So: explicit buyer markers → needs reply. Explicit "You sent…" → skip.
   //    Raw text is undecidable from the row alone → botSent memory + the
   //    preview-change fingerprint decide.
+  // Stable, timestamp-free row text. Drops leaf elements whose WHOLE text is a
+  // timestamp (structural — avoids the glued-digit ambiguity "499"+"2h"="4992h"),
+  // then a light text cleanup. This is the fingerprint that decides "new message?".
   function rowPreview(row) {
-    return (row && row.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 160);
+    try {
+      if (row && row.cloneNode) {
+        const c = row.cloneNode(true);
+        c.querySelectorAll('*').forEach(el => {
+          if (!el.children.length) { const t = (el.textContent || '').trim(); if (t && ISO_TS.test(t)) el.textContent = ''; }
+        });
+        return stripTime(c.textContent).slice(0, 160);
+      }
+    } catch (_) {}
+    return stripTime(row && row.textContent || '').slice(0, 160);
   }
   // NOTE: the row's textContent concatenates name/title/preview with NO spaces
   // ("ShanuYou sent an attachment.Tue"), so `\b` before a word does NOT work —
