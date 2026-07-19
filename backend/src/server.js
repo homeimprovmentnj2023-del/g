@@ -23,6 +23,7 @@ const ai      = require('./ai');
 const brain   = require('./brain');
 const sanitize = require('./sanitize');
 const zip     = require('./zip');
+const notify  = require('./notify');
 
 const app  = express();
 const PORT = process.env.PORT || 3333;
@@ -372,6 +373,25 @@ app.post('/api/debug', (req, res) => { db.addDebug(req.body || {}); res.json({ o
 app.get('/api/debug', (_req, res) => res.json(db.getDebug()));
 app.delete('/api/debug', (_req, res) => { db.clearDebug(); res.json({ ok: true }); });
 
+// Scheduling context for the chatbot: what "today" is and the EARLIEST date it
+// may offer (today + settings.booking_lead_days). Local time throughout — the
+// backend runs on the user's own PC, so server-local == business-local.
+function schedulingContext() {
+  const lead = Number(db.getSettings().booking_lead_days);
+  const leadDays = Number.isFinite(lead) && lead >= 0 ? lead : 2;
+  const ymd = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  const nowD = new Date();
+  const earliest = new Date(nowD.getFullYear(), nowD.getMonth(), nowD.getDate() + leadDays);
+  return {
+    today: ymd(nowD),
+    weekday: nowD.toLocaleDateString('en-US', { weekday: 'long' }),
+    now: nowD.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }),
+    earliest_date: ymd(earliest),
+    earliest_weekday: earliest.toLocaleDateString('en-US', { weekday: 'long' }),
+    lead_days: leadDays,
+  };
+}
+
 // ── Marketplace → existing chatbot bridge relay ────────────────────────────────
 // Personal-profile Marketplace chats have no Meta API/webhook, so the extension
 // content script (marketplace-chat.js) forwards each inbound message here. This
@@ -388,7 +408,7 @@ app.post('/api/marketplace/incoming', async (req, res) => {
     return res.status(503).json({ error: 'N8N_WEBHOOK_URL not set in backend/.env — see docs/n8n-marketplace-adapter.md' });
   }
 
-  const { source = 'marketplace', account_id, sender_id, thread_id, sender_name, text, timestamp, history } = req.body || {};
+  const { source = 'marketplace', account_id, sender_id, thread_id, sender_name, text, timestamp, history, fb_url } = req.body || {};
   if (!text || !String(text).trim()) return res.status(400).json({ error: 'text required' });
 
   const payload = {
@@ -396,6 +416,12 @@ app.post('/api/marketplace/incoming', async (req, res) => {
     sender_id, thread_id, sender_name,
     text: String(text), timestamp: timestamp || new Date().toISOString(),
     history: Array.isArray(history) ? history : [],   // recent thread for context/memory
+    fb_url: fb_url || '',                             // conversation link (for Job Cards)
+    // Scheduling context so the bot offers REAL dates. The n8n Marketplace
+    // Responder prompt should reference these fields — offer appointments
+    // starting `scheduling.earliest_date` (today + booking_lead_days), NEVER
+    // "tomorrow"/hardcoded offsets. All values are computed in SERVER-LOCAL time.
+    scheduling: schedulingContext(),
   };
 
   // Abort if n8n is slow so the content script never hangs the page.
@@ -978,6 +1004,140 @@ function brainTick() {
 }
 
 setInterval(() => { try { brainTick(); } catch (e) { console.warn('[brain]', e.message); } }, 60 * 1000);
+
+// ── Scheduling & dispatch: technicians + Job Cards ────────────────────────────
+// Job Cards route booked appointments to technicians by STATE coverage. SMS goes
+// out via Twilio when configured (see notify.js); otherwise the API returns the
+// composed message + WhatsApp/sms: click-to-send links for a one-tap manual send.
+// UI: /dispatch.html (served by the dashboard static middleware above).
+
+// Active techs covering the job's state (state from the card, else from its ZIP).
+function suggestedTechsFor(job) {
+  const st = String(job.state || '').toUpperCase() || zip.stateForZip(job.zip);
+  if (!st) return [];
+  return db.getTechnicians().filter(t => t.active && (t.states || []).includes(st));
+}
+
+// Technicians CRUD.
+app.get('/api/techs', (_req, res) => res.json(db.getTechnicians()));
+app.post('/api/techs', (req, res) => {
+  const { name, phone, states, active, notes } = req.body || {};
+  if (!name) return res.status(400).json({ error: 'name required' });
+  res.status(201).json(db.addTechnician({ name, phone, states, active, notes }));
+});
+app.patch('/api/techs/:id', (req, res) => {
+  const t = db.updateTechnician(req.params.id, req.body || {});
+  t ? res.json(t) : res.status(404).json({ error: 'Not found' });
+});
+app.delete('/api/techs/:id', (req, res) => { db.deleteTechnician(req.params.id); res.json({ ok: true }); });
+
+// List Job Cards with filters: ?state=NJ&tech=2&status=new&date=YYYY-MM-DD&q=text
+app.get('/api/dispatch', (req, res) => {
+  const { state, tech, status, date, q } = req.query || {};
+  const ymd = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  let jobs = db.getDispatchJobs();
+  if (state)  jobs = jobs.filter(j => String(j.state || '').toUpperCase() === String(state).toUpperCase());
+  if (tech)   jobs = jobs.filter(j => String(j.tech_id) === String(tech));
+  if (status) jobs = jobs.filter(j => j.status === status);
+  if (date)   jobs = jobs.filter(j => {
+    if (!j.appointment_at) return false;
+    const d = new Date(j.appointment_at);
+    return !isNaN(d.getTime()) && ymd(d) === String(date);   // same LOCAL day
+  });
+  if (q) {
+    const needle = String(q).toLowerCase();
+    jobs = jobs.filter(j => [j.customer_name, j.phone, j.address, j.city]
+      .some(v => String(v || '').toLowerCase().includes(needle)));
+  }
+  res.json(jobs.map(j => ({ ...j, suggested_techs: j.tech_id == null ? suggestedTechsFor(j) : [] })));
+});
+
+// Create a Job Card. City/state autofill from ZIP (and ZIP from the address text).
+app.post('/api/dispatch', async (req, res) => {
+  const b = req.body || {};
+  if (!b.zip && b.address) b.zip = zip.normalizeZip(b.address);   // "12 Main St, Newark NJ 07102"
+  if (b.zip && (!b.city || !b.state)) {
+    try {
+      const info = await zip.resolveZip(b.zip);
+      if (info) { if (!b.city) b.city = info.city; if (!b.state) b.state = info.state; }
+    } catch (_) {}
+  }
+  const job = db.createDispatchJob(b);
+  res.status(201).json({ ...job, suggested_techs: suggestedTechsFor(job) });
+});
+
+// One Job Card + suggestions + composed messages + click-to-send links.
+app.get('/api/dispatch/:id', (req, res) => {
+  const job = db.getDispatchJob(req.params.id);
+  if (!job) return res.status(404).json({ error: 'Not found' });
+  const tech = job.tech_id != null ? db.getTechnicians().find(t => t.id === Number(job.tech_id))
+             : (req.query.techId ? db.getTechnicians().find(t => t.id === Number(req.query.techId)) : null);
+  const techMsg = tech ? notify.composeTechMessage(job, tech) : null;
+  const custMsg = notify.composeCustomerSMS(job);
+  res.json({
+    ...job,
+    suggested_techs: suggestedTechsFor(job),
+    messages: { tech_message: techMsg, customer_sms: custMsg },
+    links: {
+      maps: notify.mapsLink(job),
+      wa_tech: tech ? notify.waLink(tech.phone, techMsg) : null,
+      sms_tech: tech ? notify.smsLink(tech.phone, techMsg) : null,
+      wa_customer: notify.waLink(job.phone, custMsg),
+      sms_customer: notify.smsLink(job.phone, custMsg),
+    },
+  });
+});
+
+// Edit any card fields (status, tech_id, notes, photos array, …).
+app.patch('/api/dispatch/:id', (req, res) => {
+  const job = db.updateDispatchJob(req.params.id, req.body || {});
+  job ? res.json(job) : res.status(404).json({ error: 'Not found' });
+});
+
+app.delete('/api/dispatch/:id', (req, res) => { db.deleteDispatchJob(req.params.id); res.json({ ok: true }); });
+
+// Assign a tech + send them the Job Card (SMS if Twilio configured, else links).
+app.post('/api/dispatch/:id/assign', async (req, res) => {
+  const job = db.getDispatchJob(req.params.id);
+  if (!job) return res.status(404).json({ error: 'Not found' });
+  const tech = db.getTechnicians().find(t => t.id === Number((req.body || {}).tech_id));
+  if (!tech) return res.status(400).json({ error: 'tech_id required (unknown technician)' });
+  const status = (job.status === 'scheduled' || job.status === 'confirmed') ? 'dispatched' : job.status;
+  const updated = db.updateDispatchJob(job.id, { tech_id: tech.id, status });
+  const message = notify.composeTechMessage(updated, tech);
+  const sms = await notify.sendSMS(tech.phone, message);
+  db.addLog({ step: 'dispatch', status: sms.ok ? 'success' : 'info',
+    detail: `Job #${job.id} → ${tech.name}: ${sms.ok ? 'SMS sent' : (sms.manual ? 'manual send (no Twilio)' : 'SMS failed: ' + sms.error)}` });
+  res.json({
+    ok: true, sent: !!sms.ok, manual: !sms.ok, message,
+    links: { wa: notify.waLink(tech.phone, message), sms: notify.smsLink(tech.phone, message) },
+  });
+});
+
+// Send the customer their confirmation SMS (same manual-fallback pattern).
+app.post('/api/dispatch/:id/notify-customer', async (req, res) => {
+  const job = db.getDispatchJob(req.params.id);
+  if (!job) return res.status(404).json({ error: 'Not found' });
+  const message = notify.composeCustomerSMS(job);
+  const sms = await notify.sendSMS(job.phone, message);
+  if (sms.ok) db.updateDispatchJob(job.id, { confirmation_sms_sent_at: new Date().toISOString() });
+  db.addLog({ step: 'dispatch', status: sms.ok ? 'success' : 'info',
+    detail: `Job #${job.id} customer SMS: ${sms.ok ? 'sent' : (sms.manual ? 'manual send (no Twilio)' : 'failed: ' + sms.error)}` });
+  res.json({
+    ok: true, sent: !!sms.ok, manual: !sms.ok, message,
+    links: { wa: notify.waLink(job.phone, message), sms: notify.smsLink(job.phone, message) },
+  });
+});
+
+// Mark the customer's confirmation (they replied YES / confirmed by phone).
+app.post('/api/dispatch/:id/confirm', (req, res) => {
+  const job = db.getDispatchJob(req.params.id);
+  if (!job) return res.status(404).json({ error: 'Not found' });
+  const patch = { customer_confirmed: true, confirmed_at: new Date().toISOString() };
+  if (job.status === 'new' || job.status === 'scheduled') patch.status = 'confirmed';
+  db.addLog({ step: 'dispatch', status: 'success', detail: `Job #${job.id} confirmed by customer (${(req.body || {}).via || 'manual'})` });
+  res.json(db.updateDispatchJob(job.id, patch));
+});
 
 // ── Serve dashboard for any unknown route ─────────────────────────────────────
 

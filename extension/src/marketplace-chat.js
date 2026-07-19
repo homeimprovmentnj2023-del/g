@@ -414,6 +414,7 @@
       text: inbound.text,
       timestamp: new Date().toISOString(),
       history,                                  // recent thread for context/memory
+      fb_url: location.href,                    // conversation link (for dispatch Job Cards)
     };
 
     let reply;

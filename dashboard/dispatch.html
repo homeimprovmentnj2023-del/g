@@ -1,0 +1,440 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Dispatch — Job Cards</title>
+<style>
+  :root { --bg:#f4f6f8; --card:#fff; --line:#e3e7ec; --ink:#1c2530; --muted:#7a8796;
+          --ok:#16a34a; --warn:#d97706; --bad:#dc2626; --accent:#2563eb; --purple:#7c3aed; }
+  * { box-sizing:border-box; }
+  body { margin:0; font:14px/1.5 -apple-system,Segoe UI,Roboto,Arial,sans-serif; background:var(--bg); color:var(--ink); }
+  header { display:flex; align-items:center; justify-content:space-between; gap:16px; flex-wrap:wrap;
+           padding:14px 20px; background:#fff; border-bottom:1px solid var(--line); position:sticky; top:0; z-index:5; }
+  header h1 { font-size:17px; margin:0; }
+  .sub { color:var(--muted); font-size:12px; }
+  main { padding:18px; max-width:1180px; margin:0 auto; display:grid; gap:16px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px 16px; }
+  .card h2 { font-size:13px; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); margin:0 0 10px; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th,td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); }
+  th { color:var(--muted); font-weight:600; }
+  tbody tr { cursor:pointer; }
+  tbody tr:hover { background:#f0f5ff; }
+  .badge { display:inline-block; padding:2px 8px; border-radius:20px; font-size:12px; font-weight:600; }
+  .b-new{background:#dbeafe;color:var(--accent)} .b-scheduled{background:#fef3c7;color:var(--warn)}
+  .b-confirmed{background:#dcfce7;color:var(--ok)} .b-dispatched{background:#ede9fe;color:var(--purple)}
+  .b-done{background:#e5e7eb;color:#4b5563} .b-canceled{background:#fee2e2;color:var(--bad)}
+  .b-cover{background:#dcfce7;color:var(--ok);margin-left:6px}
+  button { font:inherit; border:1px solid var(--line); background:#fff; border-radius:7px; padding:5px 10px; cursor:pointer; }
+  button:hover { background:#f0f3f7; }
+  button.primary { background:var(--accent); color:#fff; border-color:var(--accent); }
+  button.danger { color:var(--bad); border-color:#f3c2c2; }
+  input, select, textarea { font:inherit; border:1px solid var(--line); border-radius:7px; padding:5px 8px; background:#fff; color:var(--ink); }
+  textarea { width:100%; resize:vertical; }
+  .row { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+  .stats { display:flex; gap:24px; }
+  .big { font-size:26px; font-weight:700; }
+  .muted { color:var(--muted); }
+  .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:8px 12px; }
+  .grid2 label, .fld label { display:block; font-size:12px; color:var(--muted); margin-bottom:2px; }
+  .grid2 input, .grid2 select { width:100%; }
+  .fld { margin:8px 0; }
+  .thumbs img { height:64px; border-radius:6px; margin:3px; border:1px solid var(--line); }
+  .overlay { position:fixed; inset:0; background:rgba(15,23,42,.45); display:none; z-index:20; }
+  .overlay.open { display:block; }
+  .panel { position:fixed; top:0; right:0; bottom:0; width:min(560px,100%); background:#fff; z-index:21;
+           box-shadow:-8px 0 30px rgba(0,0,0,.15); transform:translateX(105%); transition:.18s; overflow-y:auto; padding:16px 18px; }
+  .panel.open { transform:none; }
+  .panel h3 { margin:0 0 4px; }
+  .sec { border-top:1px solid var(--line); margin-top:14px; padding-top:12px; }
+  .sec h4 { margin:0 0 8px; font-size:12px; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); }
+  .sendbox { background:#f8fafc; border:1px solid var(--line); border-radius:8px; padding:10px; margin-top:8px; }
+  .ok-note { color:var(--ok); font-weight:600; }
+  .conf { color:var(--ok); font-weight:700; }
+  details summary { cursor:pointer; font-weight:600; }
+  @media (max-width:720px){ .grid2{ grid-template-columns:1fr; } .stats{ gap:14px; } }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>🚚 Dispatch</h1>
+    <div class="sub" id="clock">loading…</div>
+  </div>
+  <div class="stats">
+    <div><div class="big" id="stToday">—</div><div class="muted">jobs today</div></div>
+    <div><div class="big" id="stUnconf">—</div><div class="muted">unconfirmed</div></div>
+    <div><div class="big" id="stUnassigned">—</div><div class="muted">unassigned</div></div>
+  </div>
+  <button class="primary" onclick="openNew()">+ New Job</button>
+</header>
+
+<main>
+  <div class="card">
+    <h2>Filters</h2>
+    <div class="row">
+      <select id="fState"><option value="">All states</option></select>
+      <select id="fTech"><option value="">All technicians</option></select>
+      <select id="fStatus">
+        <option value="">All statuses</option>
+        <option>new</option><option>scheduled</option><option>confirmed</option>
+        <option>dispatched</option><option>done</option><option>canceled</option>
+      </select>
+      <input id="fDate" type="date" />
+      <input id="fQ" type="text" placeholder="Search customer / phone / address…" style="min-width:220px" />
+      <button onclick="clearFilters()">Clear</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Job Cards</h2>
+    <table>
+      <thead><tr><th>Appointment</th><th>Customer</th><th>City / State</th><th>Services</th><th>Price</th><th>Tech</th><th>Status</th><th>Conf.</th></tr></thead>
+      <tbody id="jobsBody"><tr><td colspan="8" class="muted">loading…</td></tr></tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <details id="techDetails">
+      <summary>Technicians</summary>
+      <table style="margin-top:10px">
+        <thead><tr><th>Name</th><th>Phone</th><th>States</th><th>Active</th><th>Notes</th><th></th></tr></thead>
+        <tbody id="techBody"><tr><td colspan="6" class="muted">loading…</td></tr></tbody>
+      </table>
+      <div class="row" style="margin-top:10px">
+        <input id="tName" placeholder="Name" />
+        <input id="tPhone" placeholder="Phone" style="width:140px" />
+        <input id="tStates" placeholder="States (NJ, NY)" style="width:130px" />
+        <label class="row" style="gap:4px"><input id="tActive" type="checkbox" checked /> active</label>
+        <input id="tNotes" placeholder="Notes" style="min-width:160px" />
+        <button class="primary" onclick="saveTech()" id="tSaveBtn">Add technician</button>
+        <button onclick="resetTechForm()" id="tCancelBtn" style="display:none">Cancel</button>
+      </div>
+    </details>
+  </div>
+</main>
+
+<div class="overlay" id="overlay" onclick="closePanel()"></div>
+<div class="panel" id="panel">
+  <div class="row" style="justify-content:space-between">
+    <h3 id="pTitle">Job</h3>
+    <button onclick="closePanel()">✕ Close</button>
+  </div>
+  <div class="sub" id="pMeta"></div>
+
+  <div class="grid2" style="margin-top:10px">
+    <div><label>Customer name</label><input id="j_customer_name" /></div>
+    <div><label>Phone</label><input id="j_phone" /></div>
+    <div><label>Address</label><input id="j_address" /></div>
+    <div><label>ZIP</label><input id="j_zip" onblur="zipBlur()" /></div>
+    <div><label>City</label><input id="j_city" /></div>
+    <div><label>State (2-letter)</label><input id="j_state" maxlength="2" /></div>
+    <div><label>Services</label><input id="j_services" /></div>
+    <div><label>Price ($)</label><input id="j_price" type="number" step="1" /></div>
+    <div><label>Appointment (local)</label><input id="j_appointment" type="datetime-local" /></div>
+    <div><label>Status</label>
+      <select id="j_status">
+        <option>new</option><option>scheduled</option><option>confirmed</option>
+        <option>dispatched</option><option>done</option><option>canceled</option>
+      </select>
+    </div>
+  </div>
+  <div class="fld"><label>FB conversation</label>
+    <input id="j_fb_url" placeholder="https://www.facebook.com/marketplace/t/…" style="width:100%" />
+    <a id="j_fb_link" href="#" target="_blank" rel="noopener" style="display:none">Open conversation ↗</a>
+  </div>
+  <div class="fld"><label>Photos (URLs, comma/space/newline separated)</label>
+    <textarea id="j_photos" rows="2"></textarea>
+    <div class="thumbs" id="j_thumbs"></div>
+  </div>
+  <div class="fld"><label>Notes</label><textarea id="j_notes" rows="2"></textarea></div>
+  <div class="row">
+    <button class="primary" onclick="saveJob()">Save</button>
+    <a id="j_maps" href="#" target="_blank" rel="noopener"><button type="button">Open in Maps</button></a>
+    <button class="danger" onclick="deleteJob()" id="j_delete">Delete</button>
+    <span id="saveMsg" class="muted"></span>
+  </div>
+
+  <div class="sec" id="assignSec">
+    <h4>Assign technician</h4>
+    <div id="assignList" class="muted">—</div>
+    <div id="assignResult"></div>
+  </div>
+
+  <div class="sec" id="custSec">
+    <h4>Customer confirmation</h4>
+    <div class="row">
+      <button onclick="notifyCustomer()">Send confirmation SMS</button>
+      <button onclick="confirmJob()">Mark confirmed ✓</button>
+      <span id="confState" class="muted"></span>
+    </div>
+    <div id="custResult"></div>
+  </div>
+</div>
+
+<script>
+const API = '';  // same origin as the backend
+const $ = (id) => document.getElementById(id);
+const j = (r) => r.json();
+async function get(p){ return fetch(API+p).then(j); }
+async function post(p,b){ return fetch(API+p,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b||{})}).then(j); }
+async function patch(p,b){ return fetch(API+p,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)}).then(j); }
+async function del(p){ return fetch(API+p,{method:'DELETE'}).then(j); }
+const esc = (s) => String(s==null?'':s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+let jobs = [], techs = [], currentId = null;  // currentId=null → New Job form
+
+const fmtAppt = (iso) => {
+  if (!iso) return '<span class="muted">unscheduled</span>';
+  const d = new Date(iso); if (isNaN(d)) return esc(iso);
+  return d.toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'}) + ', ' +
+         d.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'});
+};
+const badge = (st) => `<span class="badge b-${esc(st||'new')}">${esc(st||'new')}</span>`;
+const techName = (id) => (techs.find(t=>t.id===Number(id))||{}).name || ('#'+id);
+
+// ── Filters (persisted in localStorage) ─────────────────────────────────────
+const FILTER_KEY = 'dispatchFilters';
+const filterIds = ['fState','fTech','fStatus','fDate','fQ'];
+function saveFilters(){ const o={}; filterIds.forEach(id=>o[id]=$(id).value); localStorage.setItem(FILTER_KEY, JSON.stringify(o)); }
+function restoreFilters(){ try { const o=JSON.parse(localStorage.getItem(FILTER_KEY)||'{}'); filterIds.forEach(id=>{ if(o[id]!=null) $(id).value=o[id]; }); } catch(_){} }
+function clearFilters(){ filterIds.forEach(id=>$(id).value=''); saveFilters(); load(); }
+filterIds.forEach(id => { $(id).addEventListener('change', ()=>{ saveFilters(); load(); }); });
+$('fQ').addEventListener('input', ()=>{ saveFilters(); load(); });
+
+function filterQuery(){
+  const p = new URLSearchParams();
+  if ($('fState').value)  p.set('state', $('fState').value);
+  if ($('fTech').value)   p.set('tech', $('fTech').value);
+  if ($('fStatus').value) p.set('status', $('fStatus').value);
+  if ($('fDate').value)   p.set('date', $('fDate').value);
+  if ($('fQ').value.trim()) p.set('q', $('fQ').value.trim());
+  const s = p.toString(); return s ? '?'+s : '';
+}
+
+// ── Load & render ───────────────────────────────────────────────────────────
+async function load(){
+  try {
+    [techs, jobs] = await Promise.all([get('/api/techs'), get('/api/dispatch'+filterQuery())]);
+    const all = await get('/api/dispatch');   // unfiltered, for stats + state list
+    $('clock').textContent = 'updated ' + new Date().toLocaleTimeString();
+    // stats
+    const today = new Date(); const ymd = d=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+    $('stToday').textContent = all.filter(x=>x.appointment_at && ymd(new Date(x.appointment_at))===ymd(today)).length;
+    $('stUnconf').textContent = all.filter(x=>!x.customer_confirmed && x.status!=='done' && x.status!=='canceled').length;
+    $('stUnassigned').textContent = all.filter(x=>x.tech_id==null && x.status!=='done' && x.status!=='canceled').length;
+    // state dropdown options (from jobs + techs), keep selection
+    const states = [...new Set([].concat(all.map(x=>x.state), ...techs.map(t=>t.states||[])).filter(Boolean).map(s=>String(s).toUpperCase()))].sort();
+    const keepS = $('fState').value;
+    $('fState').innerHTML = '<option value="">All states</option>' + states.map(s=>`<option>${esc(s)}</option>`).join('');
+    $('fState').value = keepS;
+    const keepT = $('fTech').value;
+    $('fTech').innerHTML = '<option value="">All technicians</option>' + techs.map(t=>`<option value="${t.id}">${esc(t.name)}</option>`).join('');
+    $('fTech').value = keepT;
+    // jobs table
+    $('jobsBody').innerHTML = jobs.length ? jobs.map(x=>{
+      const tech = x.tech_id!=null ? esc(techName(x.tech_id))
+        : ((x.suggested_techs||[]).length ? `<span class="muted">suggest: ${esc(x.suggested_techs.map(t=>t.name).join(', '))}</span>` : '<span class="muted">—</span>');
+      return `<tr onclick="openJob(${x.id})">
+        <td>${fmtAppt(x.appointment_at)}</td>
+        <td><b>${esc(x.customer_name)||'-'}</b></td>
+        <td>${esc([x.city,x.state].filter(Boolean).join(', '))}</td>
+        <td>${esc(String(x.services||'').slice(0,40))}</td>
+        <td>${x.price!=null?('$'+x.price):''}</td>
+        <td>${tech}</td>
+        <td>${badge(x.status)}</td>
+        <td>${x.customer_confirmed?'<span class="conf">✓</span>':''}</td>
+      </tr>`;
+    }).join('') : '<tr><td colspan="8" class="muted">No jobs match.</td></tr>';
+    renderTechs();
+  } catch(e){ $('clock').textContent = 'backend offline?'; }
+}
+
+// ── Detail panel ────────────────────────────────────────────────────────────
+const jobFields = ['customer_name','phone','address','zip','city','state','services','price','fb_url','notes'];
+
+function openPanel(){ $('overlay').classList.add('open'); $('panel').classList.add('open'); }
+function closePanel(){ $('overlay').classList.remove('open'); $('panel').classList.remove('open'); currentId=null; }
+
+function isoToLocalInput(iso){
+  if (!iso) return '';
+  const d = new Date(iso); if (isNaN(d)) return '';
+  const p = n=>String(n).padStart(2,'0');
+  return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+function openNew(){
+  currentId = null;
+  $('pTitle').textContent = 'New Job';
+  $('pMeta').textContent = '';
+  jobFields.forEach(f=>$('j_'+f).value='');
+  $('j_appointment').value=''; $('j_status').value='new'; $('j_photos').value=''; $('j_thumbs').innerHTML='';
+  $('j_fb_link').style.display='none'; $('j_maps').style.display='none'; $('j_delete').style.display='none';
+  $('assignSec').style.display='none'; $('custSec').style.display='none';
+  $('saveMsg').textContent='';
+  openPanel();
+}
+
+async function openJob(id){
+  const x = await get('/api/dispatch/'+id);
+  currentId = id;
+  $('pTitle').textContent = `Job #${id} — ${x.customer_name||'?'}`;
+  $('pMeta').innerHTML = badge(x.status) + (x.customer_confirmed?' <span class="conf">customer confirmed ✓</span>':'');
+  jobFields.forEach(f=>$('j_'+f).value = x[f]==null?'':x[f]);
+  $('j_appointment').value = isoToLocalInput(x.appointment_at);
+  $('j_status').value = x.status||'new';
+  $('j_photos').value = (x.photos||[]).join('\n');
+  renderThumbs();
+  $('j_fb_link').style.display = x.fb_url?'inline':'none'; $('j_fb_link').href = x.fb_url||'#';
+  $('j_maps').style.display='inline'; $('j_maps').href = x.links.maps;
+  $('j_delete').style.display='inline';
+  $('saveMsg').textContent='';
+  // assign section: suggested first, then the rest
+  $('assignSec').style.display='block'; $('custSec').style.display='block';
+  const sug = x.suggested_techs||[];
+  const sugIds = new Set(sug.map(t=>t.id));
+  const rest = techs.filter(t=>t.active && !sugIds.has(t.id));
+  const st = String(x.state||'').toUpperCase();
+  const line = (t, covers) => `<div class="row" style="margin:4px 0">
+      <b>${esc(t.name)}</b> <span class="muted">${esc(t.phone||'')}</span>
+      ${covers?`<span class="badge b-cover">covers ${esc(st)}</span>`:''}
+      ${x.tech_id===t.id?'<span class="badge b-dispatched">assigned</span>':`<button onclick="assign(${t.id})">Assign & send</button>`}
+    </div>`;
+  $('assignList').innerHTML = (sug.length||rest.length)
+    ? sug.map(t=>line(t,true)).join('') + rest.map(t=>line(t,false)).join('')
+    : 'No technicians yet — add one in the Technicians section.';
+  $('assignResult').innerHTML='';
+  $('custResult').innerHTML='';
+  $('confState').textContent = x.confirmation_sms_sent_at ? ('confirmation SMS sent ' + new Date(x.confirmation_sms_sent_at).toLocaleString()) : '';
+  openPanel();
+}
+
+function renderThumbs(){
+  const urls = $('j_photos').value.split(/[\s,]+/).map(s=>s.trim()).filter(Boolean);
+  $('j_thumbs').innerHTML = urls.map(u=>`<a href="${esc(u)}" target="_blank" rel="noopener"><img src="${esc(u)}" onerror="this.style.display='none'"/></a>`).join('');
+}
+$('j_photos').addEventListener('input', renderThumbs);
+
+async function zipBlur(){
+  const z = $('j_zip').value.trim().match(/\d{5}/);
+  if (!z) return;
+  try {
+    const info = await get('/api/zip/'+z[0]);
+    if (info && !info.error){
+      if (!$('j_city').value) $('j_city').value = info.city||'';
+      if (!$('j_state').value) $('j_state').value = info.state||'';
+    }
+  } catch(_){}
+}
+
+function collectJob(){
+  const b = {};
+  jobFields.forEach(f=>b[f]=$('j_'+f).value.trim());
+  b.state = b.state.toUpperCase();
+  b.price = $('j_price').value!=='' ? Number($('j_price').value) : null;
+  b.status = $('j_status').value;
+  b.photos = $('j_photos').value.split(/[\s,]+/).map(s=>s.trim()).filter(Boolean);
+  b.appointment_at = $('j_appointment').value ? new Date($('j_appointment').value).toISOString() : '';
+  return b;
+}
+
+async function saveJob(){
+  const b = collectJob();
+  if (currentId==null){
+    const created = await post('/api/dispatch', b);
+    $('saveMsg').textContent = 'created ✓';
+    await load(); openJob(created.id);
+  } else {
+    await patch('/api/dispatch/'+currentId, b);
+    $('saveMsg').textContent = 'saved ✓'; setTimeout(()=>$('saveMsg').textContent='',2000);
+    load();
+  }
+}
+
+async function deleteJob(){
+  if (currentId==null || !confirm('Delete this job card?')) return;
+  await del('/api/dispatch/'+currentId);
+  closePanel(); load();
+}
+
+// send-result UI: 'SMS sent ✓' or WhatsApp/SMS buttons + copyable message.
+function sendResultHtml(r){
+  if (r.sent) return '<div class="sendbox ok-note">SMS sent ✓</div>';
+  return `<div class="sendbox">
+    <div class="row" style="margin-bottom:6px">
+      <a href="${esc(r.links.wa)}" target="_blank" rel="noopener"><button type="button">Open WhatsApp</button></a>
+      <a href="${esc(r.links.sms)}"><button type="button">Open SMS</button></a>
+      <button type="button" onclick="navigator.clipboard.writeText(this.closest('.sendbox').querySelector('textarea').value)">Copy message</button>
+    </div>
+    <textarea rows="7" readonly>${esc(r.message)}</textarea>
+  </div>`;
+}
+
+async function assign(techId){
+  if (currentId==null) return;
+  const r = await post(`/api/dispatch/${currentId}/assign`, { tech_id: techId });
+  $('assignResult').innerHTML = r.ok ? sendResultHtml(r) : `<div class="sendbox">Error: ${esc(r.error||'failed')}</div>`;
+  load();
+}
+
+async function notifyCustomer(){
+  if (currentId==null) return;
+  const r = await post(`/api/dispatch/${currentId}/notify-customer`, {});
+  $('custResult').innerHTML = r.ok ? sendResultHtml(r) : `<div class="sendbox">Error: ${esc(r.error||'failed')}</div>`;
+  load();
+}
+
+async function confirmJob(){
+  if (currentId==null) return;
+  await post(`/api/dispatch/${currentId}/confirm`, { via: 'manual' });
+  await load(); openJob(currentId);
+}
+
+// ── Technicians ─────────────────────────────────────────────────────────────
+let editTechId = null;
+function renderTechs(){
+  $('techBody').innerHTML = techs.length ? techs.map(t=>`<tr>
+      <td><b>${esc(t.name)}</b></td><td>${esc(t.phone||'')}</td>
+      <td>${(t.states||[]).map(s=>`<span class="badge b-new">${esc(s)}</span>`).join(' ')}</td>
+      <td>${t.active?'<span class="conf">✓</span>':'<span class="muted">off</span>'}</td>
+      <td class="muted">${esc(t.notes||'')}</td>
+      <td><button onclick="editTech(${t.id})">Edit</button> <button class="danger" onclick="deleteTech(${t.id})">Delete</button></td>
+    </tr>`).join('') : '<tr><td colspan="6" class="muted">No technicians yet.</td></tr>';
+}
+function editTech(id){
+  const t = techs.find(x=>x.id===id); if (!t) return;
+  editTechId = id;
+  $('tName').value=t.name; $('tPhone').value=t.phone||''; $('tStates').value=(t.states||[]).join(', ');
+  $('tActive').checked=!!t.active; $('tNotes').value=t.notes||'';
+  $('tSaveBtn').textContent='Save technician'; $('tCancelBtn').style.display='inline';
+  $('techDetails').open = true;
+}
+function resetTechForm(){
+  editTechId = null;
+  ['tName','tPhone','tStates','tNotes'].forEach(id=>$(id).value='');
+  $('tActive').checked = true;
+  $('tSaveBtn').textContent='Add technician'; $('tCancelBtn').style.display='none';
+}
+async function saveTech(){
+  const b = {
+    name: $('tName').value.trim(), phone: $('tPhone').value.trim(),
+    states: $('tStates').value.split(/[\s,]+/).map(s=>s.trim().toUpperCase()).filter(Boolean),
+    active: $('tActive').checked, notes: $('tNotes').value.trim(),
+  };
+  if (!b.name) { alert('Name required'); return; }
+  if (editTechId!=null) await patch('/api/techs/'+editTechId, b);
+  else await post('/api/techs', b);
+  resetTechForm(); load();
+}
+async function deleteTech(id){
+  if (!confirm('Delete this technician?')) return;
+  await del('/api/techs/'+id); load();
+}
+
+restoreFilters();
+load();
+setInterval(load, 20000);
+</script>
+</body>
+</html>

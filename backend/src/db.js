@@ -18,6 +18,7 @@ const empty = {
   templates: [], listings: [], listing_events: [],
   competitors: [], ai_suggestions: [], post_queue: [], logs: [], schedules: [],
   repost_history: [], debug_snapshots: [], accounts: [], brain_actions: [],
+  dispatch_jobs: [], technicians: [],   // scheduling & dispatch: Job Cards + the techs they're sent to
   zip_cache: {},   // "95032" -> { city:"Los Gatos", state:"CA", name:"California" } — resolved once, known forever
   settings: {
     auto_repost: false, ai_rewrite: false,
@@ -30,13 +31,22 @@ const empty = {
     brain_zip_cooldown_hours: 20,       // don't re-post the same ZIP within N hours (anti-duplicate)
     brain_quiet_hours: [],              // e.g. [0,1,2,3,4,5] to pause overnight (local hours)
     product_framing: true,              // rewrite each post's title/desc to read as an item for sale (anti service-ad suspension)
+    booking_lead_days: 2,               // chatbot offers appointments starting today+N days
   },
-  counters: { templates: 0, listing_events: 0, ai_suggestions: 0, post_queue: 0, logs: 0, schedules: 0, accounts: 0, brain_actions: 0 },
+  counters: { templates: 0, listing_events: 0, ai_suggestions: 0, post_queue: 0, logs: 0, schedules: 0, accounts: 0, brain_actions: 0, dispatch_jobs: 0, technicians: 0 },
 };
 
 const BAK_FILE = DATA_FILE + '.bak';
 let data;
-function loadFrom(file) { const d = JSON.parse(fs.readFileSync(file, 'utf8')); for (const k of Object.keys(empty)) if (!(k in d)) d[k] = empty[k]; return d; }
+function loadFrom(file) {
+  const d = JSON.parse(fs.readFileSync(file, 'utf8'));
+  for (const k of Object.keys(empty)) if (!(k in d)) d[k] = empty[k];
+  // NESTED migration: an existing file already has `counters`, so the top-level
+  // merge above skips it — any counter added later would be undefined and
+  // ++undefined = NaN ids (rows without ids, broken /:id routes). Merge per key.
+  for (const k of Object.keys(empty.counters)) if (!(k in d.counters)) d.counters[k] = 0;
+  return d;
+}
 try {
   data = loadFrom(DATA_FILE);
 } catch (_) {
@@ -382,4 +392,96 @@ module.exports = {
     return row;
   },
   getBrainActions: (limit = 200) => [...data.brain_actions].sort((a, b) => b.id - a.id).slice(0, limit),
+
+  // ── Dispatch jobs (Job Cards: a booked appointment routed to a technician) ────
+  createDispatchJob: (j) => {
+    const row = {
+      id:             nextId('dispatch_jobs'),
+      customer_name:  j.customer_name || '',
+      phone:          j.phone || '',
+      address:        j.address || '',
+      city:           j.city || '',
+      state:          j.state || '',
+      zip:            j.zip || '',
+      services:       j.services || '',
+      price:          j.price != null && j.price !== '' ? Number(j.price) : null,
+      photos:         Array.isArray(j.photos) ? j.photos : [],
+      appointment_at: j.appointment_at || '',      // ISO string or '' (unscheduled)
+      fb_url:         j.fb_url || '',              // link back to the Marketplace conversation
+      notes:          j.notes || '',
+      tech_id:        j.tech_id != null ? Number(j.tech_id) : null,
+      status:         j.status || 'new',           // new | scheduled | confirmed | dispatched | done | canceled
+      customer_confirmed: false,
+      confirmed_at:   null,
+      created_at:     now(),
+      updated_at:     now(),
+    };
+    data.dispatch_jobs.push(row);
+    saveNow();
+    return row;
+  },
+  updateDispatchJob: (id, patch) => {
+    const row = data.dispatch_jobs.find(x => x.id === Number(id));
+    if (!row) return null;
+    const p = patch || {};
+    if (p.customer_name  !== undefined) row.customer_name  = p.customer_name || '';
+    if (p.phone          !== undefined) row.phone          = p.phone || '';
+    if (p.address        !== undefined) row.address        = p.address || '';
+    if (p.city           !== undefined) row.city           = p.city || '';
+    if (p.state          !== undefined) row.state          = String(p.state || '').toUpperCase();
+    if (p.zip            !== undefined) row.zip            = p.zip || '';
+    if (p.services       !== undefined) row.services       = p.services || '';
+    if (p.price          !== undefined) row.price          = p.price !== '' && p.price != null ? Number(p.price) : null;
+    if (p.photos         !== undefined) row.photos         = Array.isArray(p.photos) ? p.photos : [];
+    if (p.appointment_at !== undefined) row.appointment_at = p.appointment_at || '';
+    if (p.fb_url         !== undefined) row.fb_url         = p.fb_url || '';
+    if (p.notes          !== undefined) row.notes          = p.notes || '';
+    if (p.tech_id        !== undefined) row.tech_id        = p.tech_id != null && p.tech_id !== '' ? Number(p.tech_id) : null;
+    if (p.status         !== undefined) row.status         = p.status || row.status;
+    if (p.customer_confirmed !== undefined) row.customer_confirmed = !!p.customer_confirmed;
+    if (p.confirmed_at   !== undefined) row.confirmed_at   = p.confirmed_at;
+    if (p.confirmation_sms_sent_at !== undefined) row.confirmation_sms_sent_at = p.confirmation_sms_sent_at;
+    row.updated_at = now();
+    saveNow();
+    return row;
+  },
+  // Soonest appointment first; unscheduled ('' appointment) last, newest of those first.
+  getDispatchJobs: () => [...data.dispatch_jobs].sort((a, b) => {
+    if (a.appointment_at && b.appointment_at) return a.appointment_at < b.appointment_at ? -1 : (a.appointment_at > b.appointment_at ? 1 : 0);
+    if (a.appointment_at) return -1;
+    if (b.appointment_at) return 1;
+    return b.created_at - a.created_at;
+  }),
+  getDispatchJob: (id) => data.dispatch_jobs.find(x => x.id === Number(id)) || null,
+  deleteDispatchJob: (id) => { data.dispatch_jobs = data.dispatch_jobs.filter(x => x.id !== Number(id)); saveNow(); },
+
+  // ── Technicians (who gets dispatched, by state coverage) ──────────────────────
+  addTechnician: (t) => {
+    const row = {
+      id:     nextId('technicians'),
+      name:   t.name || '',
+      phone:  t.phone || '',
+      states: (Array.isArray(t.states) ? t.states : []).map(s => String(s).trim().toUpperCase()).filter(s => /^[A-Z]{2}$/.test(s)),
+      active: t.active !== false,
+      notes:  t.notes || '',
+      created_at: now(),
+    };
+    data.technicians.push(row);
+    saveNow();
+    return row;
+  },
+  updateTechnician: (id, patch) => {
+    const t = data.technicians.find(x => x.id === Number(id));
+    if (!t) return null;
+    const p = patch || {};
+    if (p.name   !== undefined) t.name   = p.name || '';
+    if (p.phone  !== undefined) t.phone  = p.phone || '';
+    if (p.states !== undefined) t.states = (Array.isArray(p.states) ? p.states : []).map(s => String(s).trim().toUpperCase()).filter(s => /^[A-Z]{2}$/.test(s));
+    if (p.active !== undefined) t.active = !!p.active;
+    if (p.notes  !== undefined) t.notes  = p.notes || '';
+    saveNow();
+    return t;
+  },
+  getTechnicians: () => [...data.technicians].sort((a, b) => a.id - b.id),
+  deleteTechnician: (id) => { data.technicians = data.technicians.filter(x => x.id !== Number(id)); saveNow(); },
 };
