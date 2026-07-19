@@ -81,7 +81,41 @@ Dashboard: http://localhost:3333/  (index.html) and /brain.html (brain control p
 - **Delete a listing:** `POST /api/brain/delete-listing {"url":"...","accountId":N}` (queues a delete-only job).
 - **Per-profile setup:** in each Chrome profile, load the extension from `C:\Users\Luis\g\extension`, open the popup, select the account. Only a profile with `fbmAccountId` set polls that account's jobs.
 
-## Dispatch subsystem (scheduling & job cards)
+## CLOUD Dispatch System (2026-07-19 — the live one; PC-off capable)
+Runs entirely in **n8n cloud + Supabase** ("Supabase Messenger DB" credential) — the
+user's PC does NOT need to be on. holi is untouched: the system only READS the
+`bookings` table holi writes.
+- **Tables**: `dispatch_jobs` (source `messenger|marketplace|manual`, `source_ref`
+  = psid/thread_id dedupe key, UNIQUE(source, source_ref); same fields as the local
+  cards + `appointment_date`/`appointment_time` text) and `technicians`
+  (`states` jsonb array, `is_default`).
+- **n8n workflows** (ids in parentheses):
+  - *Dispatch - Ingest holi bookings* (`9dqsDOAnBBLAjlWw`): every 5 min, one
+    INSERT…SELECT…ON CONFLICT upsert of `bookings` rows with `lead_status='BOOKED'`
+    → Job Cards. State/ZIP parsed in SQL (inline USPS prefix VALUES); auto-assigns
+    the default active tech covering the state; past-appointment imports get status
+    `completed`, recent/future get `scheduled`. Updates never touch completed/canceled
+    cards or manual tech assignments.
+  - *Dispatch API* (`lCKaz47R16kT9kV8`): webhook → Code router (key check +
+    whitelisted-field SQL builder) → Postgres. Actions: bootstrap, job.save,
+    job.delete, tech.save, tech.delete.
+  - *Dispatch Dashboard* (`A9uwwPiRE0nAWHOj`): webhook serves the single-file HTML
+    dashboard (filters, job editor, techs, WhatsApp/SMS click-to-send composed
+    client-side). **URL + access key: `C:\Users\Luis\Desktop\Dispatch-Access.txt`
+    (NEVER commit them).**
+- **Marketplace responder** (`ODhlxy9Rc0dZxYdC`) now: agent outputs
+  `booking_confirmed` + structured `booking{...}`; prompt uses the backend's
+  `scheduling` context (offers dates ≥ earliest_date — verified it books the right
+  real date); new nodes `Build JobCard SQL` → `Create Job Card`
+  (onError: continue, so card failures can't break customer replies) upsert
+  marketplace bookings into `dispatch_jobs` directly in the cloud.
+- **Gotchas**: the n8n Postgres node mangles multi-statement SQL and dollar-quoted
+  function bodies (mystery "syntax error near [") — keep every query a single
+  statement, no CREATE FUNCTION. PS5.1 `Out-File -Encoding utf8` writes a BOM that
+  breaks JSON.parse / SQL transport — use `[IO.File]::ReadAllText/WriteAllText`.
+  Auto-SMS (Twilio) not configured — dashboard offers one-tap wa.me / sms: links.
+
+## LOCAL Dispatch subsystem (scheduling & job cards — legacy, needs PC on)
 - **Job Cards** (`dispatch_jobs` in fbm.json): customer, phone, address, city/state/**zip (autofilled via `zip.resolveZip`)**, services, price, photos[], `appointment_at` (ISO), `fb_url` (conversation link, sent by the bridge), notes, `tech_id`, status `new→scheduled→confirmed→dispatched→completed/canceled`, `customer_confirmed`.
 - **Technicians** (`technicians`): name, phone, `states[]` (2-letter). Suggestion = active techs covering the job's state (fallback `zip.stateForZip`).
 - **Dashboard**: `http://localhost:3333/dispatch.html` — filters (state/tech/date/status/search), card editor, techs manager, assign + notify buttons.
