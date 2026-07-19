@@ -81,5 +81,14 @@ Dashboard: http://localhost:3333/  (index.html) and /brain.html (brain control p
 - **Delete a listing:** `POST /api/brain/delete-listing {"url":"...","accountId":N}` (queues a delete-only job).
 - **Per-profile setup:** in each Chrome profile, load the extension from `C:\Users\Luis\g\extension`, open the popup, select the account. Only a profile with `fbmAccountId` set polls that account's jobs.
 
+## Dispatch subsystem (scheduling & job cards)
+- **Job Cards** (`dispatch_jobs` in fbm.json): customer, phone, address, city/state/**zip (autofilled via `zip.resolveZip`)**, services, price, photos[], `appointment_at` (ISO), `fb_url` (conversation link, sent by the bridge), notes, `tech_id`, status `new→scheduled→confirmed→dispatched→completed/canceled`, `customer_confirmed`.
+- **Technicians** (`technicians`): name, phone, `states[]` (2-letter). Suggestion = active techs covering the job's state (fallback `zip.stateForZip`).
+- **Dashboard**: `http://localhost:3333/dispatch.html` — filters (state/tech/date/status/search), card editor, techs manager, assign + notify buttons.
+- **Messaging** (`backend/src/notify.js`): `composeTechMessage` (full job summary + Google Maps link) and `composeCustomerSMS` ("scheduled service appointment, not an estimate — reply YES"). **Auto-SMS only if `TWILIO_ACCOUNT_SID`/`TWILIO_AUTH_TOKEN`/`TWILIO_FROM` in `backend/.env`**; otherwise endpoints return `manual:true` + `wa.me`/`sms:` click-to-send links.
+- **API**: `/api/techs` CRUD; `/api/dispatch` CRUD + `/:id/assign`, `/:id/notify-customer`, `/:id/confirm`. n8n can POST `/api/dispatch` to auto-create cards from bookings.
+- **Chatbot dates**: `/api/marketplace/incoming` injects `scheduling{today, weekday, now, earliest_date, earliest_weekday, lead_days}` (`settings.booking_lead_days`, default 2). The n8n **Marketplace Responder** prompt must reference these to offer dates ≥ earliest_date (never "tomorrow"). holi untouched.
+- **Gotcha (nested migration)**: `loadFrom` merges missing top-level keys AND missing `counters` keys — adding a table without its counter used to yield `NaN` ids on existing data files.
+
 ## Status posture
 Autonomous posting is functional across profiles. Known open items: add multiple real photos per template; the "Your Listings" delete flow; and (from the audit) a Telegram down-alert + atomic DB saves for true unattended reliability. Real `ANTHROPIC_API_KEY` would enable the AI listing-text/policy features.
