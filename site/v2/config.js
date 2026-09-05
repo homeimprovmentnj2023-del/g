@@ -1,90 +1,121 @@
-/* ---------------------------------------------------------------------------
-   SITE CONFIG — edit this file first. Everything marked REPLACE must be
-   changed to your real details before you send paid traffic to this page.
-   The page reads these values at load and fills them in wherever they appear.
---------------------------------------------------------------------------- */
+/* ===========================================================================
+   V2 (development) — Pristine bathtub refinishing landing page
+   PRODUCTION V1 IS NOT TOUCHED BY ANYTHING IN THIS FOLDER.
+
+   Edit this file only. Every integration seam is here so the page never has a
+   hard-coded phone number, endpoint or asset path.
+   =========================================================================== */
 
 window.SITE_CONFIG = {
 
+  /* -- 1. environment ---------------------------------------------------
+     THE MOST IMPORTANT FLAG ON THE PAGE.
+
+     While `env` is 'development' the page will NOT fire a Google Ads
+     conversion, no matter what else is configured. Test submissions during
+     review must never reach Smart Bidding — a handful of fake conversions
+     teaches the bidding model the wrong thing and the damage outlives the
+     test. GA4 still receives everything, tagged as v2, so the page stays
+     measurable while it is being reviewed.
+
+     Flip to 'production' only when V2 is approved and actually taking ads. */
+  env: 'development',          // 'development' | 'production'
+  pageVersion: 'v2',           // stamped on every event and every lead
+
   business: {
-    name:        'REPLACE Home Improvement',
-    phone:       '(555) 555-0100',        // shown on the page
-    phoneHref:   '+15555550100',          // used in tel: links — digits only, with +1
-    email:       'quotes@example.com',
-    // New Jersey requires a Home Improvement Contractor registration number on
-    // all advertising. Put your real one here — this is a legal requirement,
-    // not a trust badge.
-    licenseLabel:  'NJ HIC Reg. #',
-    licenseNumber: 'REPLACE 13VHXXXXXXXX',
-    yearsInBusiness: 'REPLACE',           // e.g. '12'
-    jobsCompleted:   'REPLACE',           // e.g. '2,400'
-    ratingValue:     'REPLACE',           // e.g. '4.9' — must match your real profile
-    ratingCount:     'REPLACE',           // e.g. '318'
-    ratingSource:    'Google'
+    name:         'REPLACE — business name',
+    // Existing production number. Used for tap-to-call everywhere.
+    phone:        '(555) 555-0100',
+    phoneHref:    '+15555550100',
+    // The number that receives photo texts. Usually the same line.
+    smsNumber:    '+15555550100',
+    // Prefilled body for the "text a photo" link. Kept short — long bodies
+    // get truncated by some Android SMS apps.
+    smsPrefill:   'Hi! Here is a photo of my bathtub — can I get a free quote?',
+    serviceArea:  'REPLACE — e.g. North Jersey & NYC metro'
   },
 
   offer: {
-    // The single promise in the headline. Keep it concrete and free.
-    headlineOffer: 'Free In-Home Estimate',
-    // Secondary incentive. Delete if you do not actually run one.
-    incentive:     'REPLACE — e.g. $500 off projects over $5,000',
-    // How long the quote stays valid. LeafFilter uses one year; it removes
-    // the "I need to decide today" pressure that makes people bounce.
-    quoteValidFor: '12 months',
-    responseTime:  'within 24 hours'
+    warrantyYears:   '2',
+    // Potential lifespan. NEVER presented as the warranty term.
+    durabilityYears: '8+',
+    // Set active:false and the $25 line disappears everywhere at once.
+    photoDiscount:   { active: true, amount: '$25' }
   },
 
-  form: {
-    // Where leads go. Leave '' and the form runs in demo mode: it validates,
-    // shows the thank-you state, logs the payload to the console, and sends
-    // nothing. Set this to your endpoint (Formspree, Netlify, your CRM, or a
-    // backend of your own) before launch.
-    endpoint: '',
-    method:   'POST',
-    // Sent with every lead so you can tell v1 and v2 apart in your CRM.
-    variant:  'v2'
+  /* -- 2. hero video ----------------------------------------------------
+     The real refinishing footage. This is the main selling element, not a
+     background texture, so it is never dimmed or overlaid with heavy scrim.
+
+     `src`      : your uploaded MP4 (H.264 + AAC plays everywhere)
+     `webm`     : optional smaller alternative, served first when supported
+     `poster`   : first frame — shown before the video paints. Use a GLOSSY
+                  FINISHED tub, not a dirty before-shot; it is what a visitor
+                  on a slow connection sees first.
+     `hasVoiceover`: false while the clip still carries original on-site audio.
+                  While false the sound button stays hidden, because unmuting
+                  into hammering and echo actively costs you the lead.
+                  Flip to true once the sales voiceover is laid in. */
+  video: {
+    src:          'media/hero-refinishing.mp4',
+    webm:         '',
+    poster:       'media/hero-poster.jpg',
+    hasVoiceover: false,
+    // Caption strip under the video. Tells the story even with sound off.
+    stages:       ['Before', 'Refinishing', 'Glossy finish']
   },
 
-  tracking: {
-    // Google Analytics 4 — 'G-XXXXXXXXXX'
-    ga4MeasurementId: '',
-    // Google Ads — 'AW-XXXXXXXXX' and the conversion label from the Ads UI
-    googleAdsId:              '',
-    googleAdsConversionLabel: '',
-    // Fires a conversion when someone taps the phone number, not just on the
-    // form. Home services leads arrive by phone more often than by form.
-    trackPhoneClicks: true
-  },
-
-  serviceArea: {
-    region:   'New Jersey',
-    // Shown in the service-area section and used in the ZIP check below.
-    counties: [
-      'Bergen', 'Essex', 'Hudson', 'Passaic', 'Morris',
-      'Union', 'Middlesex', 'Somerset', 'Monmouth', 'Ocean'
-    ],
-    // ZIP prefixes you actually serve. A ZIP outside these still submits —
-    // it is routed as out-of-area rather than rejected, because turning away
-    // a paid click outright is worse than a lead you can decline politely.
-    zipPrefixes: ['07', '08'],
-    outOfAreaMessage: 'We may not cover that ZIP yet — send it through anyway and we will tell you straight away.'
-  },
-
+  /* -- 3. services (real list) ------------------------------------------ */
   services: [
-    { id: 'bath',     label: 'Bathroom remodel',    blurb: 'Full gut renovations and tub-to-shower conversions.' },
-    { id: 'kitchen',  label: 'Kitchen remodel',     blurb: 'Cabinets, counters, layout changes, full rebuilds.' },
-    { id: 'roofing',  label: 'Roofing',             blurb: 'Tear-offs, re-roofs, storm and leak repair.' },
-    { id: 'siding',   label: 'Siding & gutters',    blurb: 'Vinyl, fiber cement, gutter and guard systems.' },
-    { id: 'windows',  label: 'Windows & doors',     blurb: 'Replacement windows, entry and patio doors.' },
-    { id: 'basement', label: 'Basement finishing',  blurb: 'Waterproofing and full basement build-outs.' },
-    { id: 'addition', label: 'Addition or deck',    blurb: 'Extensions, dormers, decks and porches.' },
-    { id: 'other',    label: 'Something else',      blurb: 'Tell us what you have in mind.' }
+    'Bathtub Refinishing',
+    'Tub + Tile Refinishing',
+    'Tile Refinishing',
+    'Caulking',
+    'Crack Repair',
+    'Fiberglass Repair'
   ],
 
-  timelines: [
-    { id: 'asap',     label: 'As soon as possible' },
-    { id: '1-3mo',    label: 'In the next 1–3 months' },
-    { id: '3-6mo',    label: 'In 3–6 months' },
-    { id: 'planning', label: 'Just planning for now' }
-  ]
+  /* -- 4. integrations --------------------------------------------------
+     All blank = safe demo mode. The page validates and shows its success
+     states but sends nothing anywhere, and says so on screen. */
+  integrations: {
+    // Where a V2 lead is saved. Point at the n8n Dispatch API (action
+    // job.save) or a thin proxy in front of it.
+    // ⚠ Do NOT paste the n8n access key here — this file ships to the
+    // browser. Put the key server-side and expose an unauthenticated-but-
+    // rate-limited proxy route, or sign requests from your backend.
+    leadEndpoint: '',
+
+    // holi's chat. The V2 chat widget is a NEW FRONTEND ONLY — it posts to
+    // holi and renders the reply. holi's prompts, booking flow, CRM, Google
+    // Calendar and Telegram are not touched by anything here, per the hard
+    // rule in CLAUDE.md.
+    chatEndpoint: '',
+
+    // The calendar you already built. Embedded in an iframe so V2 reuses the
+    // real availability rather than building a second calendar.
+    calendarUrl:  '',
+    calendarHeight: 760
+  },
+
+  /* -- 5. tracking ------------------------------------------------------ */
+  tracking: {
+    ga4MeasurementId:         '',   // same property as V1 is fine — events carry page_version
+    gtmContainerId:           '',   // use a separate GTM *environment* for V2
+    clarityProjectId:         '',
+    googleAdsId:              '',
+    googleAdsConversionLabel: '',
+    // Belt and braces alongside env: both must be true for a conversion to
+    // fire. Leave false until V2 is approved.
+    adsConversionsEnabled:    false
+  },
+
+  /* -- 6. recovery popup ------------------------------------------------
+     Deliberately late and easily dismissed. Suppressed permanently for this
+     visitor once they convert by any route. */
+  popup: {
+    enabled:     true,
+    delayMs:     75000,          // ~75s, inside the 60–90s window
+    minScrollPct: 15             // and only if they actually engaged
+  }
 };

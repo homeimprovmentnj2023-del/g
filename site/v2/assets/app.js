@@ -1,401 +1,513 @@
-/* =========================================================================
-   v2 landing page behaviour
-   No dependencies and no build step — this file runs as-is.
-   ========================================================================= */
+/* ===========================================================================
+   V2 behaviour. No dependencies, no build step.
+   =========================================================================== */
 (function () {
   'use strict';
 
   var CFG = window.SITE_CONFIG || {};
   var $  = function (s, r) { return (r || document).querySelector(s); };
-  var $$ = function (s, r) { return Array.prototype.slice.call((r || document).querySelectorAll(s)); };
+  var $$ = function (s, r) { return [].slice.call((r || document).querySelectorAll(s)); };
+  var IS_DEV = (CFG.env || 'development') !== 'production';
+
+  function dig(p) { return p.split('.').reduce(function (o, k) { return (o && o[k] != null) ? o[k] : ''; }, CFG); }
 
   /* ---------------------------------------------------------------------
-     Config binding — fills [data-cfg] text and [data-cfg-tel] links so the
-     phone number and licence number live in exactly one place.
+     Attribution — captured on landing, kept for the session, attached to
+     every lead so a booked job can be traced back to the keyword that
+     produced it.
      --------------------------------------------------------------------- */
 
-  function dig(path) {
-    return path.split('.').reduce(function (o, k) {
-      return (o && o[k] !== undefined && o[k] !== null) ? o[k] : '';
-    }, CFG);
-  }
-
-  function bindConfig() {
-    $$('[data-cfg]').forEach(function (el) {
-      var v = dig(el.getAttribute('data-cfg'));
-      if (v !== '') el.textContent = v;
-    });
-    $$('[data-cfg-tel]').forEach(function (el) {
-      var n = dig('business.phoneHref');
-      if (n) el.setAttribute('href', 'tel:' + n);
-    });
-    var y = $('[data-year]');
-    if (y) y.textContent = new Date().getFullYear();
-  }
+  var ATTR_KEYS = ['gclid', 'gbraid', 'wbraid', 'utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content'];
+  var ATTR = (function () {
+    var qs = new URLSearchParams(location.search), s = {};
+    try { s = JSON.parse(sessionStorage.getItem('v2_attr') || '{}'); } catch (e) { s = {}; }
+    ATTR_KEYS.forEach(function (k) { var v = qs.get(k); if (v) s[k] = v; });
+    if (!s.first_seen) s.first_seen = new Date().toISOString();
+    if (!s.referrer)   s.referrer = document.referrer || '(direct)';
+    try { sessionStorage.setItem('v2_attr', JSON.stringify(s)); } catch (e) {}
+    return s;
+  })();
 
   /* ---------------------------------------------------------------------
      Tracking
-     Every step advance is reported separately. That is what turns the form
-     into a diagnostic: if step 2 → 3 is where people leave, you know the
-     project-detail question is the problem rather than guessing at the page.
+
+     Every event carries page_version so V1 and V2 can be separated in GA4
+     without a second property.
+
+     The Ads conversion is guarded TWICE — env must be 'production' AND
+     adsConversionsEnabled must be true. A conversion fired from a review
+     session would teach Smart Bidding from fake data, and that damage
+     outlives the test, so the default is off and the guard is not one flag.
      --------------------------------------------------------------------- */
 
   var T = CFG.tracking || {};
 
   function track(name, params) {
-    var payload = params || {};
+    var p = Object.assign({ page_version: CFG.pageVersion || 'v2', env: CFG.env || 'development' }, params || {});
     window.dataLayer = window.dataLayer || [];
-    window.dataLayer.push(Object.assign({ event: name }, payload));
-    if (typeof window.gtag === 'function') window.gtag('event', name, payload);
+    window.dataLayer.push(Object.assign({ event: name }, p));
+    if (typeof window.gtag === 'function') window.gtag('event', name, p);
+    if (IS_DEV) console.debug('[v2 event]', name, p);
   }
 
-  function trackConversion() {
-    if (typeof window.gtag !== 'function') return;
+  function adsConversion(label) {
+    if (IS_DEV) { console.debug('[v2] Ads conversion SUPPRESSED (env=development):', label); return; }
+    if (!T.adsConversionsEnabled) { console.debug('[v2] Ads conversion suppressed (adsConversionsEnabled=false)'); return; }
     if (!T.googleAdsId || !T.googleAdsConversionLabel) return;
-    window.gtag('event', 'conversion', {
-      send_to: T.googleAdsId + '/' + T.googleAdsConversionLabel
+    if (typeof window.gtag !== 'function') return;
+    window.gtag('event', 'conversion', { send_to: T.googleAdsId + '/' + T.googleAdsConversionLabel });
+  }
+
+  /* Once a visitor converts by ANY route the recovery popup is retired for
+     good — chasing someone who already called is the fastest way to look
+     careless. */
+  function markConverted(how) {
+    try { sessionStorage.setItem('v2_converted', how); } catch (e) {}
+  }
+  function hasConverted() {
+    try { return !!sessionStorage.getItem('v2_converted'); } catch (e) { return false; }
+  }
+
+  /* ---------------------------------------------------------------------
+     Config binding
+     --------------------------------------------------------------------- */
+
+  function smsHref() {
+    var n = dig('business.smsNumber') || dig('business.phoneHref');
+    // Same shape as backend/src/notify.js smsLink() — '?&body=' is the form
+    // that survives both iOS and Android SMS handlers.
+    return 'sms:' + n + '?&body=' + encodeURIComponent(dig('business.smsPrefill'));
+  }
+
+  function bindConfig() {
+    $$('[data-cfg]').forEach(function (el) { var v = dig(el.getAttribute('data-cfg')); if (v !== '') el.textContent = v; });
+    $$('[data-cfg-tel]').forEach(function (el) { el.setAttribute('href', 'tel:' + dig('business.phoneHref')); });
+    $$('[data-cfg-sms]').forEach(function (el) { el.setAttribute('href', smsHref()); });
+
+    // Services come from the real list, so the form can never drift from it.
+    var sel = $('#service');
+    if (sel) (CFG.services || []).forEach(function (s) {
+      var o = document.createElement('option'); o.value = s; o.textContent = s; sel.appendChild(o);
+    });
+
+    // The $25 line appears or vanishes everywhere from one flag.
+    var d = (CFG.offer || {}).photoDiscount || {};
+    $$('[data-discount]').forEach(function (el) {
+      if (d.active) { el.textContent = 'Send a Photo + Save ' + d.amount; el.hidden = false; }
+      else el.hidden = true;
+    });
+
+    var y = $('[data-year]'); if (y) y.textContent = new Date().getFullYear();
+    if (IS_DEV) { var bar = $('.envbar'); if (bar) bar.hidden = false; }
+  }
+
+  /* ---------------------------------------------------------------------
+     Hero video
+
+     Autoplays muted (the only way browsers allow it) and loops. Sound is
+     opt-in via an obvious button — but the button only appears once the clip
+     actually carries the sales voiceover. Unmuting into raw on-site audio
+     costs the lead, so `video.hasVoiceover` gates it.
+     --------------------------------------------------------------------- */
+
+  function wireVideo() {
+    var v = $('#heroVideo'); if (!v) return;
+    var btn = $('#soundBtn');
+    var ph  = $('#videoPlaceholder');
+    var started = false;
+
+    // Point the sources at whatever config names, then load once.
+    var mp4 = $('#heroSrcMp4'), webm = $('#heroSrcWebm');
+    var srcMp4 = dig('video.src'), srcWebm = dig('video.webm'), poster = dig('video.poster');
+    if (mp4 && srcMp4) mp4.src = srcMp4;
+    if (webm) { if (srcWebm) webm.src = srcWebm; else webm.remove(); }
+    if (poster) v.setAttribute('poster', poster);
+    v.load();
+
+    // If the real footage is not in place the poster would show as a broken
+    // black box, which looks worse than an honest placeholder. Swap to the
+    // instruction panel instead and hide the sound control with it.
+    function fallback() {
+      if (ph) ph.hidden = false;
+      v.hidden = true;
+      if (btn) btn.hidden = true;
+    }
+    v.addEventListener('error', fallback, true);
+    $$('source', v).forEach(function (s) { s.addEventListener('error', function () {
+      // Only give up once no source can play at all.
+      if (v.networkState === 3 /* NETWORK_NO_SOURCE */) fallback();
+    }); });
+    // Belt and braces: if nothing is playable shortly after load, fall back.
+    setTimeout(function () { if (v.readyState === 0 && !v.hidden) fallback(); }, 2500);
+
+    v.addEventListener('playing', function () {
+      if (started) return; started = true;
+      track('video_started', { source: 'hero' });
+    });
+
+    var stages = dig('video.stages');
+    if (stages && stages.length) {
+      $$('.vid__stage').forEach(function (el, i) { if (stages[i]) el.textContent = stages[i]; });
+    }
+
+    if (!btn) return;
+    if (!dig('video.hasVoiceover')) { btn.hidden = true; return; }
+    btn.hidden = false;
+
+    btn.addEventListener('click', function () {
+      v.muted = !v.muted;
+      if (!v.muted) {
+        v.volume = 1;
+        v.play().catch(function () {});
+        btn.querySelector('.lbl').textContent = 'Sound on';
+        track('video_sound_enabled', { source: 'hero' });
+      } else {
+        btn.querySelector('.lbl').textContent = 'Tap for sound';
+      }
+      btn.setAttribute('aria-pressed', String(!v.muted));
     });
   }
 
   /* ---------------------------------------------------------------------
-     Click attribution
-     gclid and the UTM set are captured on landing, kept for the session, and
-     submitted with the lead. Without this you cannot tie a closed job back to
-     the keyword that produced it, which is the whole point of running Ads.
+     Quote form — one screen, four fields, no ZIP gate.
      --------------------------------------------------------------------- */
 
-  var ATTR_KEYS = ['gclid', 'gbraid', 'wbraid', 'utm_source', 'utm_medium',
-                   'utm_campaign', 'utm_term', 'utm_content'];
-  var ATTR_STORE = 'lp_attr_v2';
+  function wireForm() {
+    var form = $('#quoteForm'); if (!form) return;
+    var card = $('#quoteCard');
+    var started = false, sent = false;
 
-  function captureAttribution() {
-    var qs = new URLSearchParams(window.location.search);
-    var stored = {};
-    try { stored = JSON.parse(sessionStorage.getItem(ATTR_STORE) || '{}'); } catch (e) { stored = {}; }
-
-    ATTR_KEYS.forEach(function (k) {
-      var v = qs.get(k);
-      if (v) stored[k] = v;
-    });
-    if (!stored.landing_page) stored.landing_page = window.location.pathname;
-    if (!stored.referrer)     stored.referrer = document.referrer || '(direct)';
-    if (!stored.first_seen)   stored.first_seen = new Date().toISOString();
-
-    try { sessionStorage.setItem(ATTR_STORE, JSON.stringify(stored)); } catch (e) { /* private mode */ }
-    return stored;
-  }
-
-  var ATTRIBUTION = captureAttribution();
-
-  /* ---------------------------------------------------------------------
-     Phone clicks
-     Counted as conversions because in home services the phone usually
-     outperforms the form, and an untracked call looks like a wasted click.
-     --------------------------------------------------------------------- */
-
-  function wirePhones() {
-    if (T.trackPhoneClicks === false) return;
-    $$('a[href^="tel:"]').forEach(function (a) {
-      a.addEventListener('click', function () {
-        track('phone_click', { location: a.getAttribute('data-loc') || 'unknown' });
-        trackConversion();
-      });
-    });
-  }
-
-  /* ---------------------------------------------------------------------
-     Multi-step form
-     --------------------------------------------------------------------- */
-
-  function QuoteForm(root) {
-    if (!root) return;
-
-    var form   = $('form', root);
-    var steps  = $$('.qf__step', root);
-    var bars   = $$('.qf__bar i', root);
-    var idx    = 0;
-    var sent   = false;
-    var DRAFT  = 'lp_draft_v2';
-
-    /* -- validation -------------------------------------------------- */
-
-    function fieldOf(el) { return el.closest('.f'); }
-
-    function setErr(el, msg) {
-      var f = fieldOf(el);
-      if (!f) return;
-      f.classList.add('err');
-      var e = $('.f__err', f);
-      if (e) e.textContent = msg;
+    function err(el, msg) {
+      var f = el.closest('.f'); if (!f) return;
+      f.classList.add('err'); var e = $('.f__err', f); if (e) e.textContent = msg;
       el.setAttribute('aria-invalid', 'true');
     }
-
-    function clearErr(el) {
-      var f = fieldOf(el);
-      if (!f) return;
-      f.classList.remove('err');
-      el.removeAttribute('aria-invalid');
+    function clear(el) {
+      var f = el.closest('.f'); if (!f) return;
+      f.classList.remove('err'); el.removeAttribute('aria-invalid');
     }
 
-    function validZip(v)   { return /^\d{5}$/.test(v.trim()); }
-    function validEmail(v) { return /^[^\s@]+@[^\s@]+\.[a-z]{2,}$/i.test(v.trim()); }
-    function validPhone(v) { return v.replace(/\D/g, '').length >= 10; }
-
-    // Soft area check: an out-of-area ZIP warns but never blocks. Rejecting a
-    // paid click outright is worse than a lead you decline by phone.
-    function checkArea(v) {
-      var area = CFG.serviceArea || {};
-      var pre  = area.zipPrefixes || [];
-      var note = $('#zipNote');
-      if (!note) return;
-      var out = pre.length && !pre.some(function (p) { return v.indexOf(p) === 0; });
-      note.textContent = out ? (area.outOfAreaMessage || '') : '';
-      note.style.display = out ? 'block' : 'none';
-      if (out) track('zip_out_of_area', { zip: v });
-    }
-
-    function validateStep(i) {
-      var scope = steps[i];
+    function valid() {
       var ok = true;
-
-      $$('input, textarea', scope).forEach(function (el) {
-        if (el.type === 'radio' || el.type === 'hidden') return;
-        var v = el.value.trim();
-        clearErr(el);
-
-        if (el.hasAttribute('required') && !v) {
-          setErr(el, 'This one is required.'); ok = false; return;
-        }
-        if (!v) return;
-        if (el.dataset.validate === 'zip'   && !validZip(v))   { setErr(el, 'Enter a 5-digit ZIP code.'); ok = false; }
-        if (el.dataset.validate === 'email' && !validEmail(v)) { setErr(el, 'Check that email address.'); ok = false; }
-        if (el.dataset.validate === 'phone' && !validPhone(v)) { setErr(el, 'Enter a 10-digit phone number.'); ok = false; }
-      });
-
-      // Radio groups marked required must have a selection.
-      $$('[data-required-group]', scope).forEach(function (g) {
-        var name = g.getAttribute('data-required-group');
-        if (!$('input[name="' + name + '"]:checked', scope)) {
-          ok = false;
-          var e = $('.f__err', g);
-          if (e) { e.textContent = 'Pick one to continue.'; e.style.display = 'block'; }
-        } else {
-          var e2 = $('.f__err', g);
-          if (e2) e2.style.display = 'none';
-        }
-      });
-
+      var name = $('#name'), zip = $('#zip'), phone = $('#phone'), svc = $('#service');
+      [name, zip, phone, svc].forEach(clear);
+      if (!name.value.trim())                        { err(name, 'Please tell us your name.'); ok = false; }
+      if (!/^\d{5}$/.test(zip.value.trim()))         { err(zip, 'Enter a 5-digit ZIP code.'); ok = false; }
+      if (phone.value.replace(/\D/g, '').length < 10){ err(phone, 'Enter a 10-digit phone number.'); ok = false; }
+      if (!svc.value)                                { err(svc, 'Choose a service.'); ok = false; }
       return ok;
     }
 
-    /* -- navigation --------------------------------------------------- */
-
-    function show(i, opts) {
-      steps.forEach(function (s, n) { s.classList.toggle('on', n === i); });
-      bars.forEach(function (b, n) { b.classList.toggle('on', n <= i); });
-      idx = i;
-
-      if (!opts || !opts.silent) {
-        var focusable = $('input:not([type=hidden]), textarea', steps[i]);
-        if (focusable) focusable.focus({ preventScroll: true });
-      }
-      saveDraft();
-    }
-
-    function next() {
-      if (!validateStep(idx)) {
-        track('form_step_error', { step: idx + 1 });
-        return;
-      }
-      if (idx < steps.length - 1) {
-        show(idx + 1);
-        track('form_step', { step: idx + 2, variant: (CFG.form || {}).variant || 'v2' });
-      }
-    }
-
-    function back() { if (idx > 0) show(idx - 1); }
-
-    /* -- draft persistence -------------------------------------------- */
-
-    function saveDraft() {
-      try {
-        var d = { step: idx, values: {} };
-        $$('input, textarea', form).forEach(function (el) {
-          if (el.type === 'hidden') return;
-          if (el.type === 'radio') { if (el.checked) d.values[el.name] = el.value; }
-          else if (el.value) d.values[el.name] = el.value;
-        });
-        localStorage.setItem(DRAFT, JSON.stringify(d));
-      } catch (e) { /* storage unavailable — the form still works */ }
-    }
-
-    function loadDraft() {
-      var d;
-      try { d = JSON.parse(localStorage.getItem(DRAFT) || 'null'); } catch (e) { return; }
-      if (!d || !d.values) return;
-      Object.keys(d.values).forEach(function (k) {
-        var els = $$('[name="' + k + '"]', form);
-        els.forEach(function (el) {
-          if (el.type === 'radio') { if (el.value === d.values[k]) el.checked = true; }
-          else el.value = d.values[k];
-        });
+    // free_quote_started fires on first real interaction, so the funnel
+    // separates "saw the form" from "began filling it in".
+    $$('input, select', form).forEach(function (el) {
+      el.addEventListener('input', function () {
+        clear(el);
+        if (!started) { started = true; track('free_quote_started', { location: 'hero' }); }
       });
-      if (d.step > 0 && d.step < steps.length) show(d.step, { silent: true });
-    }
+    });
 
-    function clearDraft() { try { localStorage.removeItem(DRAFT); } catch (e) {} }
+    var zip = $('#zip');
+    if (zip) zip.addEventListener('input', function () { zip.value = zip.value.replace(/\D/g, '').slice(0, 5); });
 
-    /* -- submit -------------------------------------------------------- */
-
-    function collect() {
-      var out = {};
-      $$('input, textarea', form).forEach(function (el) {
-        if (!el.name) return;
-        if (el.type === 'radio') { if (el.checked) out[el.name] = el.value; }
-        else out[el.name] = el.value.trim();
-      });
-      out.variant       = (CFG.form || {}).variant || 'v2';
-      out.submitted_at  = new Date().toISOString();
-      out.page_url      = window.location.href;
-      Object.keys(ATTRIBUTION).forEach(function (k) { out[k] = ATTRIBUTION[k]; });
-      return out;
-    }
-
-    function succeed(payload) {
-      sent = true;
-      root.classList.remove('busy');
-      root.classList.add('done');
-      clearDraft();
-      track('generate_lead', {
-        variant: payload.variant,
-        service: payload.service || '',
-        zip:     payload.zip || ''
-      });
-      trackConversion();
-      root.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    }
-
-    function submit(e) {
+    form.addEventListener('submit', function (e) {
       e.preventDefault();
-      if (sent) return;
-      if (!validateStep(idx)) return;
+      if (sent || !valid()) return;
 
-      var payload  = collect();
-      var endpoint = (CFG.form || {}).endpoint;
+      var payload = {
+        name:    $('#name').value.trim(),
+        zip:     $('#zip').value.trim(),
+        phone:   $('#phone').value.trim(),
+        service: $('#service').value,
+        source:  'landing_v2',
+        page_version: CFG.pageVersion || 'v2',
+        env:     CFG.env,
+        page_url: location.href,
+        submitted_at: new Date().toISOString()
+      };
+      Object.keys(ATTR).forEach(function (k) { payload[k] = ATTR[k]; });
 
-      // No endpoint configured — validate and show the success state, but be
-      // explicit that nothing was delivered anywhere.
-      if (!endpoint) {
-        console.warn('[v2] Demo mode: no form.endpoint set in config.js. Lead was NOT sent.', payload);
-        succeed(payload);
-        return;
-      }
+      var done = function () {
+        sent = true;
+        markConverted('form');
+        track('free_quote_submitted', { service: payload.service, zip: payload.zip });
+        track('phone_captured', { source: 'quote_form' });
+        adsConversion('lead');
+        if (card) {
+          card.innerHTML =
+            '<div class="card__bd" style="text-align:center;padding:34px 24px">' +
+            '<div style="font-size:2.6rem;line-height:1">✅</div>' +
+            '<h3 style="margin:12px 0 8px">Thank you — we have your details.</h3>' +
+            '<p style="color:var(--ink-2)">We will call you shortly with your free quote. ' +
+            'Nothing to pay, and no obligation.</p>' +
+            '<a class="btn btn--cta btn--lg" style="margin-top:20px" href="tel:' + dig('business.phoneHref') + '">' +
+            'Or call us now</a></div>';
+        }
+      };
 
-      root.classList.add('busy');
+      var ep = dig('integrations.leadEndpoint');
+      if (!ep) { console.warn('[v2] Demo mode — no integrations.leadEndpoint. Lead NOT saved:', payload); done(); return; }
+
       var btn = $('[data-submit]', form);
-      var label = btn ? btn.textContent : '';
-      if (btn) { btn.textContent = 'Sending…'; btn.disabled = true; }
+      if (btn) { btn.disabled = true; btn.textContent = 'Sending…'; }
 
-      fetch(endpoint, {
-        method:  (CFG.form || {}).method || 'POST',
-        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-        body:    JSON.stringify(payload)
-      })
-        .then(function (r) {
-          if (!r.ok) throw new Error('HTTP ' + r.status);
-          succeed(payload);
-        })
-        .catch(function (err) {
-          console.error('[v2] Lead submission failed:', err);
-          root.classList.remove('busy');
-          if (btn) { btn.textContent = label; btn.disabled = false; }
+      fetch(ep, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
+        .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); done(); })
+        .catch(function (e2) {
+          console.error('[v2] Lead save failed:', e2);
+          if (btn) { btn.disabled = false; btn.textContent = 'GET MY FREE QUOTE'; }
           var box = $('[data-submit-error]', form);
-          if (box) {
-            box.textContent = 'Something went wrong sending that. Please call us on '
-              + (CFG.business || {}).phone + ' and we will take the details directly.';
-            box.style.display = 'block';
-          }
-          track('form_submit_error', { message: String(err && err.message || err) });
+          if (box) { box.textContent = 'Could not send that. Please call ' + dig('business.phone') + ' and we will take your details.'; box.style.display = 'block'; }
+          track('form_submit_error', { message: String(e2.message || e2) });
         });
-    }
-
-    /* -- wiring -------------------------------------------------------- */
-
-    $$('[data-next]', root).forEach(function (b) { b.addEventListener('click', next); });
-    $$('[data-back]', root).forEach(function (b) { b.addEventListener('click', back); });
-    form.addEventListener('submit', submit);
-
-    // Enter advances rather than submitting a half-finished form.
-    form.addEventListener('keydown', function (e) {
-      if (e.key !== 'Enter') return;
-      if (e.target.tagName === 'TEXTAREA') return;
-      if (idx < steps.length - 1) { e.preventDefault(); next(); }
     });
-
-    // Picking a service card moves straight on — one tap, not tap-then-next.
-    $$('input[name="service"]', root).forEach(function (r) {
-      r.addEventListener('change', function () { setTimeout(next, 180); });
-    });
-
-    var zip = $('[data-validate="zip"]', root);
-    if (zip) {
-      zip.addEventListener('input', function () {
-        zip.value = zip.value.replace(/\D/g, '').slice(0, 5);
-        if (zip.value.length === 5) { clearErr(zip); checkArea(zip.value); }
-      });
-    }
-
-    $$('input, textarea', form).forEach(function (el) {
-      el.addEventListener('input',  function () { clearErr(el); });
-      el.addEventListener('change', saveDraft);
-    });
-
-    // Demo-mode banner, so a console log is never mistaken for a real lead.
-    if (!(CFG.form || {}).endpoint) {
-      var d = document.createElement('div');
-      d.className = 'qf__demo';
-      d.textContent = 'Demo mode — set form.endpoint in config.js before running ads to this page.';
-      root.insertBefore(d, root.firstChild);
-    }
-
-    loadDraft();
-    track('form_view', { variant: (CFG.form || {}).variant || 'v2' });
   }
 
   /* ---------------------------------------------------------------------
-     Scroll-depth — tells you whether people are reading past the hero.
+     Call and text
      --------------------------------------------------------------------- */
 
-  function wireScrollDepth() {
-    var hits = {};
-    var marks = [25, 50, 75, 90];
+  function wireCallText() {
+    $$('a[href^="tel:"]').forEach(function (a) {
+      a.addEventListener('click', function () {
+        markConverted('call');
+        track('call_clicked', { location: a.getAttribute('data-loc') || 'unknown' });
+        adsConversion('call');
+      });
+    });
+    $$('a[href^="sms:"], [data-cfg-sms]').forEach(function (a) {
+      a.addEventListener('click', function () {
+        markConverted('sms');
+        track('sms_quote_clicked', { location: a.getAttribute('data-loc') || 'unknown' });
+        adsConversion('sms');
+      });
+    });
+  }
+
+  /* ---------------------------------------------------------------------
+     Chat — Messenger-familiar shell in front of holi.
+
+     Answers the question first, asks for details later. There is no opening
+     ZIP question: the visitor came with a worry (will it peel? what does it
+     cost?) and being interrogated before it is addressed is why people close
+     these widgets.
+     --------------------------------------------------------------------- */
+
+  function wireChat() {
+    var btn = $('#chatBtn'), panel = $('#chatPanel'), log = $('#chatLog'),
+        form = $('#chatForm'), input = $('#chatInput'), chips = $('#chatChips');
+    if (!btn || !panel) return;
+    var opened = false, engaged = false;
+
+    function add(text, who) {
+      var d = document.createElement('div');
+      d.className = 'msg msg--' + who; d.textContent = text;
+      log.appendChild(d); log.scrollTop = log.scrollHeight;
+      return d;
+    }
+    function typing() {
+      var d = document.createElement('div');
+      d.className = 'typing'; d.innerHTML = '<i></i><i></i><i></i>';
+      log.appendChild(d); log.scrollTop = log.scrollHeight;
+      return d;
+    }
+
+    function open() {
+      panel.classList.add('on');
+      btn.setAttribute('aria-expanded', 'true');
+      if (!opened) {
+        opened = true;
+        track('chat_opened', {});
+        add('Hi 👋 How can I help you?', 'bot');
+      }
+      setTimeout(function () { input && input.focus(); }, 120);
+    }
+    function close() { panel.classList.remove('on'); btn.setAttribute('aria-expanded', 'false'); }
+
+    btn.addEventListener('click', function () { panel.classList.contains('on') ? close() : open(); });
+    var x = $('#chatClose'); if (x) x.addEventListener('click', close);
+    document.addEventListener('keydown', function (e) { if (e.key === 'Escape' && panel.classList.contains('on')) close(); });
+
+    function send(text) {
+      if (!text.trim()) return;
+      add(text, 'user');
+      if (!engaged) { engaged = true; track('chat_started', { first_message: text.slice(0, 60) }); }
+      if (chips) chips.hidden = true;
+
+      var t = typing();
+      var ep = dig('integrations.chatEndpoint');
+
+      if (!ep) {
+        setTimeout(function () {
+          t.remove();
+          add('(Demo mode — no chatEndpoint configured yet, so I am not connected to the real assistant. ' +
+              'Once holi\'s endpoint is set in config.js this reply comes from your existing assistant.)', 'bot');
+        }, 700);
+        return;
+      }
+
+      fetch(ep, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          message: text,
+          source:  'landing_v2',
+          page_version: CFG.pageVersion || 'v2',
+          session_id: sessionId(),
+          attribution: ATTR
+        })
+      })
+        .then(function (r) { return r.json(); })
+        .then(function (d) {
+          t.remove();
+          add(d.reply || d.message || d.text || 'Sorry — I did not catch that. Could you say it another way?', 'bot');
+        })
+        .catch(function (e) {
+          t.remove();
+          console.error('[v2] chat failed:', e);
+          add('Sorry, I am having trouble connecting. Please call ' + dig('business.phone') + ' and we will help right away.', 'bot');
+        });
+    }
+
+    if (form) form.addEventListener('submit', function (e) {
+      e.preventDefault(); var v = input.value; input.value = ''; send(v);
+    });
+    $$('.chip', chips).forEach(function (c) {
+      c.addEventListener('click', function () { send(c.textContent.trim()); });
+    });
+
+    // Let any button on the page open the chat.
+    $$('[data-open-chat]').forEach(function (b) {
+      b.addEventListener('click', function (e) { e.preventDefault(); open(); });
+    });
+  }
+
+  function sessionId() {
+    var k = 'v2_sid', v;
+    try { v = sessionStorage.getItem(k); } catch (e) {}
+    if (!v) {
+      v = 'v2-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
+      try { sessionStorage.setItem(k, v); } catch (e) {}
+    }
+    return v;
+  }
+
+  /* ---------------------------------------------------------------------
+     Section visibility events + calendar bridge
+     --------------------------------------------------------------------- */
+
+  function wireVisibility() {
+    var map = [
+      ['#work',       'real_work_viewed'],
+      ['#calendar',   'calendar_viewed'],
+      ['#durability', 'durability_section_viewed'],
+      ['#warranty',   'warranty_viewed']
+    ];
+    if (!('IntersectionObserver' in window)) return;
+    map.forEach(function (pair) {
+      var el = $(pair[0]); if (!el) return;
+      var io = new IntersectionObserver(function (entries) {
+        entries.forEach(function (en) {
+          if (en.isIntersecting) { track(pair[1], {}); io.disconnect(); }
+        });
+      }, { threshold: 0.3 });
+      io.observe(el);
+    });
+  }
+
+  /* The existing calendar is embedded, not rebuilt. If it posts messages out
+     we relay them as V2 events; if it does not, calendar_viewed still fires
+     and the deeper booking events simply stay silent rather than being faked. */
+  function wireCalendar() {
+    var url = dig('integrations.calendarUrl');
+    var frame = $('#calFrame'), ph = $('#calPlaceholder');
+    if (url && frame) {
+      frame.src = url;
+      frame.height = dig('integrations.calendarHeight') || 760;
+      frame.hidden = false;
+      if (ph) ph.hidden = true;
+    }
+    window.addEventListener('message', function (e) {
+      var d = e.data; if (!d || typeof d !== 'object') return;
+      var known = ['date_selected', 'time_selected', 'booking_started', 'booking_completed'];
+      if (known.indexOf(d.type) === -1) return;
+      track(d.type, d.payload || {});
+      if (d.type === 'booking_completed') { markConverted('booking'); adsConversion('booking'); }
+    });
+  }
+
+  /* ---------------------------------------------------------------------
+     Recovery popup — late, quiet, and never shown to someone who already
+     converted.
+     --------------------------------------------------------------------- */
+
+  function wirePopup() {
+    var cfg = CFG.popup || {}; if (!cfg.enabled) return;
+    var pop = $('#pop'); if (!pop) return;
+    var scrolled = 0, shown = false;
+
     window.addEventListener('scroll', function () {
       var h = document.documentElement;
-      var pct = Math.round((h.scrollTop / (h.scrollHeight - h.clientHeight)) * 100);
-      marks.forEach(function (m) {
-        if (pct >= m && !hits[m]) { hits[m] = true; track('scroll_depth', { percent: m }); }
-      });
+      scrolled = Math.max(scrolled, Math.round((h.scrollTop / (h.scrollHeight - h.clientHeight || 1)) * 100));
     }, { passive: true });
+
+    setTimeout(function () {
+      if (shown || hasConverted()) return;
+      if (scrolled < (cfg.minScrollPct || 0)) return;
+      shown = true; pop.classList.add('on');
+      track('recovery_popup_shown', {});
+      var i = $('#popPhone'); if (i) i.focus();
+    }, cfg.delayMs || 75000);
+
+    function close() { pop.classList.remove('on'); track('recovery_popup_dismissed', {}); }
+    $('#popX').addEventListener('click', close);
+    pop.addEventListener('click', function (e) { if (e.target === pop) close(); });
+
+    $('#popForm').addEventListener('submit', function (e) {
+      e.preventDefault();
+      var v = $('#popPhone').value.trim();
+      if (v.replace(/\D/g, '').length < 10) { $('#popPhone').style.borderColor = 'var(--err)'; return; }
+      markConverted('popup');
+      track('phone_captured', { source: 'recovery_popup' });
+      adsConversion('lead');
+
+      var payload = Object.assign({
+        phone: v, source: 'landing_v2_popup',
+        page_version: CFG.pageVersion || 'v2', env: CFG.env,
+        submitted_at: new Date().toISOString()
+      }, ATTR);
+      var ep = dig('integrations.leadEndpoint');
+      if (ep) fetch(ep, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }).catch(function () {});
+      else console.warn('[v2] Demo mode — popup lead NOT saved:', payload);
+
+      $('.pop__card').innerHTML = '<div style="padding:12px 0"><div style="font-size:2.4rem">✅</div>' +
+        '<div class="pop__t" style="margin-top:10px">Got it.</div>' +
+        '<p class="pop__s">We will text your free quote shortly.</p></div>';
+      setTimeout(function () { pop.classList.remove('on'); }, 2400);
+    });
   }
 
   /* --------------------------------------------------------------------- */
 
   document.addEventListener('DOMContentLoaded', function () {
     bindConfig();
-    wirePhones();
-    wireScrollDepth();
-    QuoteForm($('#quote'));
+    wireVideo();
+    wireForm();
+    wireCallText();
+    wireChat();
+    wireVisibility();
+    wireCalendar();
+    wirePopup();
 
-    $$('[data-scroll-to]').forEach(function (b) {
+    $$('[data-scroll]').forEach(function (b) {
       b.addEventListener('click', function (e) {
         e.preventDefault();
-        var t = $(b.getAttribute('data-scroll-to'));
-        if (!t) return;
+        var t = $(b.getAttribute('data-scroll')); if (!t) return;
         t.scrollIntoView({ behavior: 'smooth', block: 'start' });
-        var f = $('input:not([type=hidden])', t);
-        if (f) setTimeout(function () { f.focus({ preventScroll: true }); }, 420);
-        track('cta_click', { location: b.getAttribute('data-loc') || 'unknown' });
+        track('cta_click', { target: b.getAttribute('data-scroll'), location: b.getAttribute('data-loc') || '' });
       });
     });
+
+    track('page_view_v2', { env: CFG.env });
+    if (IS_DEV) console.info('%c[v2] DEVELOPMENT — Google Ads conversions are suppressed.', 'color:#C4560A;font-weight:bold');
   });
 })();
