@@ -419,14 +419,36 @@
      and the deeper booking events simply stay silent rather than being faked. */
   function wireCalendar() {
     var url = dig('integrations.calendarUrl');
-    var frame = $('#calFrame'), ph = $('#calPlaceholder');
+    var frame = $('#calFrame'), ph = $('#calPlaceholder'), fb = $('#calFallback');
+
     if (url && frame) {
       frame.src = url;
       frame.height = dig('integrations.calendarHeight') || 760;
       frame.hidden = false;
       if (ph) ph.hidden = true;
+
+      /* A refused frame cannot be reliably detected from the parent. A host
+         sending X-Frame-Options: DENY still fires `load`, and in current
+         Chromium probing the frame's location throws SecurityError for a
+         BLOCKED frame exactly as it does for a working cross-origin one —
+         verified against real XFO and CSP frame-ancestors responses, all
+         three indistinguishable.
+
+         So we do not guess. The escape hatch below is always visible instead:
+         if the frame comes up blank the visitor still has an obvious way
+         through, and there is no detection logic quietly failing. */
+
+      if (fb) { fb.hidden = false; var fbA = $('a', fb); if (fbA) fbA.href = url; }
     }
+
+    /* Only trust messages from the calendar's own origin. Without this check
+       any page or extension could post a fake booking_completed and fire a
+       conversion. */
+    var calOrigin = '';
+    try { calOrigin = url ? new URL(url).origin : ''; } catch (e) { calOrigin = ''; }
+
     window.addEventListener('message', function (e) {
+      if (calOrigin && e.origin !== calOrigin) return;
       var d = e.data; if (!d || typeof d !== 'object') return;
       var known = ['date_selected', 'time_selected', 'booking_started', 'booking_completed'];
       if (known.indexOf(d.type) === -1) return;

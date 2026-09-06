@@ -185,7 +185,26 @@ invented to fill a gap.
    ⚠ Do not put the n8n access key in `config.js` — this file ships to the
    browser. Keep the key server-side behind a proxy route.
 4. **`integrations.chatEndpoint`** — holi's endpoint.
-5. **`integrations.calendarUrl`** — the existing calendar.
+5. **`integrations.calendarUrl`** — set to `https://book.pristinebathrefinishing.com`.
+
+   One thing to check on a real device: booking platforms often send
+   `X-Frame-Options: DENY` or a CSP `frame-ancestors` rule, which makes an
+   embed render as a **silent blank box**. I could not verify this one — the
+   domain is blocked by this environment's egress policy — and it turns out a
+   refused frame is *not* reliably detectable from the parent page: I tested
+   real `X-Frame-Options: DENY` and `frame-ancestors 'none'` responses in
+   Chromium and both are indistinguishable from a working cross-origin frame
+   (`load` fires either way, and probing the frame's location throws
+   `SecurityError` in all three cases).
+
+   So the page does not guess. A "Calendar not loading? Open the booking page
+   in a new tab" link sits permanently under the frame, so a blank embed always
+   has an obvious way through. If it does turn out to be blocked, the real fix
+   is allowing this page's origin in `frame-ancestors` on the booking host.
+
+   `postMessage` events from the calendar are accepted **only** from that
+   origin, so nothing else can post a fake `booking_completed` and fire a
+   conversion.
 6. **`media/work-1…6`** — six real before/afters and clips for page 1, plus
    **`media/book-1…3`** — the three strongest for the booking page. There are
    ~47 real photos in `backend/data/photos/` on the Windows machine already.

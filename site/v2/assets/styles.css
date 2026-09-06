@@ -456,3 +456,14 @@ p  { margin: 0; }
   color: var(--brand); font-weight: 700; text-decoration: none; font-size: 1rem;
 }
 .backlink:hover { text-decoration: underline; }
+
+/* Escape hatch under the embedded calendar. Always visible: a booking host
+   that refuses to be framed renders blank and silent, and that is not
+   reliably detectable from the parent page, so the way out is simply always
+   there rather than conditional on a check that cannot be trusted. */
+.cal__esc {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: center;
+  gap: 12px; padding: 16px; background: var(--ground-2);
+  border-top: 1px solid var(--line); font-size: .98rem; color: var(--ink-2);
+}
+.cal__esc .btn { min-height: 48px; font-size: .98rem; padding: .55em 1.2em; }

@@ -146,8 +146,16 @@ window.SITE_CONFIG = {
 
     // The calendar you already built. Embedded in an iframe so V2 reuses the
     // real availability rather than building a second calendar.
-    calendarUrl:  '',
-    calendarHeight: 760
+    //
+    // NOTE: many booking platforms send X-Frame-Options: DENY or a CSP
+    // frame-ancestors rule, which makes an embed render as a blank box with no
+    // error. The page handles that: if the frame does not confirm it loaded
+    // within a few seconds it swaps itself for a large "Open booking calendar"
+    // button that opens the real page in a new tab. Either way the visitor can
+    // always reach it. If it does turn out to be blocked, allowing this page's
+    // origin in frame-ancestors on the booking host is the fix.
+    calendarUrl:  'https://book.pristinebathrefinishing.com',
+    calendarHeight: 820
   },
 
   /* -- booking page -----------------------------------------------------
