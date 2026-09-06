@@ -486,10 +486,165 @@
     });
   }
 
+
+  /* ---------------------------------------------------------------------
+     Warranty lockup
+
+     The warranty is never rendered on its own. Every [data-warranty] element
+     gets BOTH halves from config, so the pairing cannot drift and the 2-year
+     written warranty can never be misread as an 8-year guarantee. They are
+     different promises and the page always shows them as a pair.
+     --------------------------------------------------------------------- */
+
+  function warrantyHTML() {
+    var w = dig('offer.warrantyLabel')   || '2-Year Written Warranty';
+    var d = dig('offer.durabilityLabel') || '8+ Years Durability';
+    return '<span class="wd__w">' + w + '</span>' +
+           '<span class="wd__sep" aria-hidden="true">•</span>' +
+           '<span class="wd__d">' + d + '</span>';
+  }
+
+  function renderWarranty() {
+    $$('[data-warranty]').forEach(function (el) {
+      el.classList.add('wd');
+      if (el.hasAttribute('data-warranty-badge')) el.classList.add('wd--badge');
+      if (el.hasAttribute('data-warranty-dark'))  el.classList.add('wd--on-dark');
+      el.innerHTML = warrantyHTML();
+    });
+  }
+
+  /* ---------------------------------------------------------------------
+     Coverage / city detection
+
+     Uses the same resolver rule as the backend: state from the offline USPS
+     prefix table, city from the API. It exists only so the page can say the
+     visitor's own town back to them — it never gates, rejects or hides
+     anything. No ZIP is turned away.
+     --------------------------------------------------------------------- */
+
+  function wireCoverage() {
+    var box = $('#coverage'); if (!box) return;
+    var cov = CFG.coverage || {};
+    var zip = $('#zip');
+
+    function setAllZips() {
+      box.className = 'cover';
+      box.innerHTML = tick() + '<span>' + (cov.allZipsLine || 'We serve all ZIP codes') + '</span>';
+    }
+
+    /* City when the lookup gave us one, state otherwise — two separate
+       strings, so a failed city lookup never renders "New Jersey, NJ". */
+    function show(info) {
+      var line = info.city
+        ? (cov.cityLine  || 'Serving {city}, {state}')
+        : (cov.stateLine || 'Serving all of {stateName}');
+      box.className = 'cover cover--city';
+      box.innerHTML = tick() + '<span>' + line
+        .replace('{city}', info.city || '')
+        .replace('{state}', info.state || '')
+        .replace('{stateName}', info.name || info.state || '') + '</span>';
+    }
+    function tick() {
+      return '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
+             'stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+             '<path d="M20 6 9 17l-5-5"/></svg>';
+    }
+    setAllZips();
+    if (!zip || !window.ZIP) return;
+
+    var last = '';
+    zip.addEventListener('input', function () {
+      var v = zip.value.trim();
+      if (v.length < 5) { if (last) { last = ''; setAllZips(); } return; }
+      if (v === last) return;
+      last = v;
+
+      // Instant, offline: the state is known before any network call returns,
+      // so the visitor sees a real answer immediately either way.
+      var k = window.ZIP.known(v);
+      if (k && k.state) show(k);
+
+      window.ZIP.resolve(v).then(function (info) {
+        if (zip.value.trim() !== v) return;      // they kept typing
+        if (!info || !info.state) { setAllZips(); return; }
+        show(info);
+        track('city_detected', { zip: info.zip, city: info.city, state: info.state });
+      });
+    });
+  }
+
+  /* ---------------------------------------------------------------------
+     Trust + reviews
+     --------------------------------------------------------------------- */
+
+  function renderTrust() {
+    var host = $('#trustGrid'); if (!host) return;
+    (CFG.trust || []).forEach(function (t) {
+      var d = document.createElement('div');
+      d.className = 'tcard';
+      // A trust card can carry the warranty lockup rather than plain text.
+      var body = (t.d === 'WARRANTY_LOCKUP')
+        ? '<span class="wd" style="justify-content:flex-start">' + warrantyHTML() + '</span>'
+        : t.d;
+      d.innerHTML =
+        '<span class="tcard__ico" aria-hidden="true"><svg width="20" height="20" viewBox="0 0 24 24" ' +
+        'fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">' +
+        '<path d="M20 6 9 17l-5-5"/></svg></span>' +
+        '<span><span class="tcard__t">' + t.t + '</span><span class="tcard__d">' + body + '</span></span>';
+      host.appendChild(d);
+    });
+  }
+
+  function renderReviews() {
+    var host = $('#revGrid'); if (!host) return;
+    (CFG.reviews || []).forEach(function (r) {
+      var d = document.createElement('div');
+      var empty = !r.text;
+      d.className = 'rev' + (empty ? ' rev--empty' : '');
+      var stars = '★★★★★'.slice(0, Math.max(0, Math.min(5, r.stars || 5)));
+      d.innerHTML =
+        '<div class="rev__stars" aria-label="' + (r.stars || 5) + ' out of 5">' + stars + '</div>' +
+        '<p class="rev__text">' + (r.text ||
+          'Paste a genuine review from your Google profile here. Real reviews only — ' +
+          'invented testimonials break FTC rules and put the Ads account at risk.') + '</p>' +
+        '<div class="rev__by"><span class="rev__av">' + ((r.name || '?').charAt(0).toUpperCase()) + '</span>' +
+        '<span><span class="rev__who">' + (r.name || 'Customer name') + '</span><br>' +
+        '<span class="rev__where">' + (r.city || 'Town') + (r.source ? ' · ' + r.source : '') + '</span></span></div>';
+      host.appendChild(d);
+    });
+  }
+
+  function renderBookingMedia() {
+    var host = $('#bookMedia'); if (!host) return;
+    ((CFG.booking || {}).media || []).forEach(function (m, i) {
+      var d = document.createElement('div');
+      d.className = 'book-media__item';
+      var inner = (m.type === 'video')
+        ? '<video src="' + m.src + '" muted loop playsinline autoplay preload="metadata"></video>'
+        : '<img src="' + m.src + '" alt="' + (m.cap || '') + '" loading="lazy">';
+      d.innerHTML = inner + '<div class="book-media__cap">' + (m.cap || '') + '</div>';
+      host.appendChild(d);
+
+      // Swap to an honest placeholder if the real asset is not in place yet.
+      var el = d.querySelector('img, video');
+      el.addEventListener('error', function () {
+        var ph = document.createElement('div');
+        ph.className = 'book-media__ph';
+        ph.innerHTML = '<span><b>Media ' + (i + 1) + '</b>' + m.src + '</span>';
+        el.replaceWith(ph);
+      }, true);
+    });
+  }
+
   /* --------------------------------------------------------------------- */
 
   document.addEventListener('DOMContentLoaded', function () {
     bindConfig();
+    renderWarranty();
+    renderTrust();
+    renderReviews();
+    renderBookingMedia();
+    wireCoverage();
     wireVideo();
     wireForm();
     wireCallText();

@@ -340,3 +340,119 @@ p  { margin: 0; }
   .vid__ph      { font-size: .84rem; padding: 16px; }
   .vid__ph b    { font-size: .98rem; }
 }
+
+/* ===========================================================================
+   Warranty lockup
+   The warranty never appears alone. This component renders both halves
+   together, everywhere, from one config value — so the two can never drift
+   apart and the warranty can never be read as an 8-year guarantee.
+   =========================================================================== */
+
+.wd {
+  display: inline-flex; flex-wrap: wrap; align-items: center;
+  gap: 6px 10px; justify-content: center;
+}
+.wd__w { font-weight: 800; color: var(--ink); }
+.wd__sep { color: var(--line-2); font-weight: 700; }
+.wd__d { font-weight: 700; color: var(--brand); }
+
+/* On a dark ground (call box, footer, band) the halves invert together. */
+.wd--on-dark .wd__w { color: #fff; }
+.wd--on-dark .wd__d { color: #9FD8EA; }
+.wd--on-dark .wd__sep { color: rgba(255,255,255,.4); }
+
+/* Standalone badge form, used in the hero and on the booking page. */
+.wd--badge {
+  background: var(--brand-tint); border: 2px solid rgba(10,91,117,.22);
+  border-radius: 999px; padding: 11px 20px; font-size: 1.02rem;
+}
+
+/* ---------- coverage line ---------- */
+
+.cover {
+  display: flex; align-items: center; justify-content: center; gap: 9px;
+  background: #E6F5EF; color: var(--ok); border-radius: var(--r);
+  padding: 12px 16px; font-weight: 700; font-size: 1rem; text-align: center;
+  margin-top: 12px;
+}
+.cover svg { flex: none; }
+
+/* Fills in once the ZIP resolves to a town, so the visitor sees their own
+   place name rather than a generic promise. */
+.cover--city { background: var(--brand-tint); color: var(--brand); }
+
+/* ---------- trust grid ---------- */
+
+.trust-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+@media (max-width: 900px) { .trust-grid { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 560px) { .trust-grid { grid-template-columns: 1fr; } }
+
+.tcard {
+  background: #fff; border: 1px solid var(--line); border-radius: var(--r-lg);
+  padding: 22px 20px; display: flex; gap: 14px; align-items: flex-start;
+}
+.tcard__ico {
+  width: 42px; height: 42px; border-radius: 11px; flex: none;
+  background: var(--brand-tint); color: var(--brand); display: grid; place-items: center;
+}
+.tcard__t { font-weight: 800; font-size: 1.06rem; margin-bottom: 4px; }
+.tcard__d { font-size: .98rem; color: var(--ink-2); line-height: 1.5; }
+
+/* ---------- reviews ---------- */
+
+.rev-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+@media (max-width: 900px) { .rev-grid { grid-template-columns: 1fr; } }
+
+.rev {
+  background: #fff; border: 1px solid var(--line); border-radius: var(--r-lg);
+  padding: 24px 22px; display: flex; flex-direction: column; gap: 13px;
+}
+.rev__stars { color: #F5A623; font-size: 1.15rem; letter-spacing: 2px; }
+.rev__text { font-size: 1.04rem; line-height: 1.6; }
+.rev__by { display: flex; align-items: center; gap: 12px; margin-top: auto; padding-top: 6px; }
+.rev__av {
+  width: 40px; height: 40px; border-radius: 50%; flex: none;
+  background: var(--brand-tint); color: var(--brand);
+  display: grid; place-items: center; font-weight: 800;
+}
+.rev__who { font-weight: 700; font-size: .98rem; }
+.rev__where { font-size: .88rem; color: var(--ink-3); }
+
+/* Loud on purpose — an empty review must never reach production unnoticed. */
+.rev--empty { border: 2px dashed var(--line-2); background: var(--ground-2); }
+.rev--empty .rev__text { color: var(--ink-3); font-style: italic; }
+.rev--empty::before {
+  content: 'PASTE A REAL REVIEW';
+  align-self: flex-start; background: var(--err); color: #fff;
+  font-size: .68rem; font-weight: 800; letter-spacing: .08em;
+  padding: 4px 9px; border-radius: 5px;
+}
+
+/* ===========================================================================
+   Booking page (book.html)
+   Deliberately sparse. Three pieces of proof, four buttons, the calendar.
+   Nothing else is allowed to compete with choosing a time.
+   =========================================================================== */
+
+.bookhero { background: linear-gradient(180deg, var(--ground-2), var(--ground) 80%); padding: clamp(26px,4vw,52px) 0 clamp(20px,3vw,34px); text-align: center; }
+.bookhero h1 { margin-bottom: 12px; }
+.bookhero .lede { margin-inline: auto; max-width: 46ch; }
+
+.book-media { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-top: clamp(22px,3vw,32px); }
+@media (max-width: 780px) { .book-media { grid-template-columns: 1fr; gap: 12px; } }
+.book-media__item { border-radius: var(--r-lg); overflow: hidden; background: #0A1A22; box-shadow: var(--sh-1); }
+.book-media__item img, .book-media__item video { width: 100%; aspect-ratio: 4/3; object-fit: cover; }
+.book-media__ph {
+  aspect-ratio: 4/3; display: grid; place-items: center; text-align: center; padding: 18px;
+  background: repeating-linear-gradient(45deg, #EAF2F5 0 14px, #E1EDF1 14px 28px);
+  border: 2px dashed var(--line-2); color: var(--ink-3); font-size: .92rem;
+}
+.book-media__ph b { display: block; color: var(--ink-2); margin-bottom: 4px; }
+.book-media__cap { padding: 11px 14px; background: #fff; font-size: .94rem; font-weight: 600; color: var(--ink-2); }
+
+/* back link */
+.backlink {
+  display: inline-flex; align-items: center; gap: 8px; min-height: var(--tap);
+  color: var(--brand); font-weight: 700; text-decoration: none; font-size: 1rem;
+}
+.backlink:hover { text-decoration: underline; }

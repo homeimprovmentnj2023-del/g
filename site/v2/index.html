@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 
 <title>Bathtub Refinishing — Free Quote, No Payment Required</title>
-<meta name="description" content="Professional bathtub and tile refinishing. Glossy, like-new finish with a 2-year warranty. Free quote, no payment required. Call or text a photo for a fast quote.">
+<meta name="description" content="Professional bathtub and tile refinishing. Glossy, like-new finish. 2-Year Written Warranty • 8+ Years Durability. Free quote, no payment required, and nothing to pay until the job is finished.">
 
 <!-- V2 IS A DEVELOPMENT COPY. It must never be indexed, and it must never
      compete with production V1 in search. Remove only at launch. -->
@@ -138,8 +138,11 @@
           <div class="vid__stage">Glossy finish</div>
         </div>
 
+        <!-- The warranty always appears as the full lockup, never alone. -->
+        <div class="wd wd--badge" data-warranty data-warranty-badge style="margin-top:14px"></div>
+
         <div class="trustrow">
-          <span class="tpill"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg> 2-Year Warranty Included</span>
+          <span class="tpill"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg> Licensed &amp; Insured</span>
           <span class="tpill"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg> Free Quote</span>
           <span class="tpill"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg> No Upfront Payment</span>
           <span class="tpill"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg> See the Finished Work Before You Pay</span>
@@ -187,7 +190,11 @@
                 <div class="f__err"></div>
               </div>
 
-              <button class="btn btn--cta btn--lg btn--block" type="submit" data-submit>GET MY FREE QUOTE</button>
+              <!-- Reassurance, never a gate. Turns into the visitor's own town
+                   once the ZIP resolves; no ZIP is ever rejected. -->
+              <div class="cover" id="coverage"></div>
+
+              <button class="btn btn--cta btn--lg btn--block" type="submit" style="margin-top:14px" data-submit>GET MY FREE QUOTE</button>
               <div class="f__err" data-submit-error style="display:none;margin-top:10px"></div>
               <p class="reassure">Free Quote • No Payment Required</p>
               <p class="finep">We will call or text about your quote. No deposit is taken and nothing is charged.</p>
@@ -253,37 +260,47 @@
       <a class="btn btn--cta btn--lg" href="tel:" data-cfg-tel data-loc="work-actions">📞 Call</a>
       <a class="btn btn--lg" href="#" data-cfg-sms data-loc="work-actions">💬 Text photo</a>
       <button class="btn btn--ghost btn--lg" data-scroll="#quoteCard" data-loc="work-actions">Get free quote</button>
-      <button class="btn btn--ghost btn--lg" data-scroll="#calendar" data-loc="work-actions">See appointments</button>
+      <a class="btn btn--ghost btn--lg" href="book.html" data-loc="work-actions">See appointments</a>
     </div>
   </div>
 </section>
 
-<!-- ========================== 3. CALENDAR ========================== -->
-<section class="sec" id="calendar">
+<!-- ====================== 3. TRUST ====================== -->
+<section class="sec" id="trust">
   <div class="wrap">
     <div class="sec__head sec__head--c">
-      <div class="kicker">Real availability</div>
-      <h2>See available appointments</h2>
-      <p class="lede">View real available days and times — no payment required.</p>
+      <div class="kicker">Why people book us</div>
+      <h2>No surprises, and nothing to pay up front</h2>
+      <p class="lede">
+        The worries about refinishing are fair ones. Here is exactly where we stand on each.
+      </p>
     </div>
+    <div class="trust-grid" id="trustGrid"></div>
+  </div>
+</section>
 
-    <div class="calwrap">
-      <!-- The calendar you already built, embedded. Not rebuilt, not
-           duplicated. No ZIP is asked before availability can be viewed. -->
-      <iframe id="calFrame" title="Available appointments" hidden loading="lazy"></iframe>
-
-      <div class="cal__ph" id="calPlaceholder">
-        <b>Existing calendar mounts here</b>
-        Set <code>integrations.calendarUrl</code> in config.js and the real
-        booking calendar loads in this frame — the same one already in production.
-      </div>
+<!-- ====================== 4. REAL REVIEWS ====================== -->
+<section class="sec sec--alt" id="reviews">
+  <div class="wrap">
+    <div class="sec__head sec__head--c">
+      <div class="kicker">Real customers</div>
+      <h2>What people say afterwards</h2>
+      <p class="lede">Genuine reviews from customers whose tubs we actually refinished.</p>
     </div>
+    <div class="rev-grid" id="revGrid"></div>
+  </div>
+</section>
 
-    <div style="text-align:center">
-      <span class="nopay">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
-        Viewing or choosing a time costs nothing — you are not being charged.
-      </span>
+<!-- ============ 5. BOOKING CTA → second page ============ -->
+<section class="sec" id="bookcta">
+  <div class="wrap">
+    <div class="callbox" style="text-align:center;padding:clamp(30px,4vw,46px) 24px">
+      <h2 style="color:#fff;margin-bottom:10px">See available appointments</h2>
+      <p style="color:rgba(255,255,255,.9);font-size:1.1rem;max-width:44ch;margin:0 auto 8px">
+        View real available days and times. No payment required, and nothing is charged for choosing one.
+      </p>
+      <div class="wd wd--on-dark" data-warranty data-warranty-dark style="margin:14px 0 22px"></div>
+      <a class="btn btn--cta btn--lg" href="book.html" data-loc="book-cta">See available appointments →</a>
     </div>
   </div>
 </section>
@@ -301,7 +318,6 @@
     </div>
     <div class="work">
       <div class="stub" id="durability"><b>4. Durability / professional process</b>Clean → prep → repair → bond/coat → application → cure → care. 8+ years potential lifespan shown <em>beside</em>, never merged with, the 2-year warranty.</div>
-      <div class="stub"><b>5. Real reviews</b>Genuine reviews only — nothing invented.</div>
       <div class="stub"><b>6. Refinish vs replace</b>Cost, mess and time compared honestly.</div>
       <div class="stub" id="warranty"><b>7. See the finished work before you pay</b>The strongest objection-killer you have. Deserves its own section.</div>
       <div class="stub"><b>8. FAQ</b>Will it peel? Is it just paint? How long does it last?</div>
@@ -330,7 +346,7 @@
 <div class="mbar">
   <a class="btn btn--cta" href="tel:" data-cfg-tel data-loc="mobile-bar">📞 Call</a>
   <a class="btn btn--ghost" href="#" data-cfg-sms data-loc="mobile-bar">💬 Text</a>
-  <button class="btn btn--ghost" data-scroll="#calendar" data-loc="mobile-bar">Book</button>
+  <a class="btn btn--ghost" href="book.html" data-loc="mobile-bar">Book</a>
 </div>
 
 <!-- ========================= chat widget ========================= -->
@@ -385,6 +401,7 @@
   </div>
 </div>
 
+<script src="assets/zip.js"></script>
 <script src="assets/app.js"></script>
 </body>
 </html>

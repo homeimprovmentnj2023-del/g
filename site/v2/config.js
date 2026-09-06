@@ -36,12 +36,64 @@ window.SITE_CONFIG = {
   },
 
   offer: {
+    /* THE WARRANTY LOCKUP.
+       The warranty is never stated on its own anywhere on the site — every
+       mention carries the durability line with it, in this exact pairing:
+
+           2-Year Written Warranty • 8+ Years Durability
+
+       Both halves live here so they cannot drift apart, and the page renders
+       them through one component (`data-warranty`). Never edit one half in
+       the HTML: change it here and it changes everywhere at once.
+
+       They mean different things and must never be merged: the warranty is a
+       written 2-year commitment; the 8+ years is potential durability with
+       proper care, depending on use and conditions. */
+    warrantyLabel:   '2-Year Written Warranty',
+    durabilityLabel: '8+ Years Durability',
     warrantyYears:   '2',
-    // Potential lifespan. NEVER presented as the warranty term.
     durabilityYears: '8+',
+
     // Set active:false and the $25 line disappears everywhere at once.
     photoDiscount:   { active: true, amount: '$25' }
   },
+
+  /* -- coverage ---------------------------------------------------------
+     No ZIP is ever turned away. The form resolves the ZIP to a city purely
+     so the page can say the town's name back to the visitor — it is never
+     used to gate, reject or hide anything. */
+  coverage: {
+    allZips:      true,
+    allZipsLine:  'We serve all ZIP codes in our service area',
+    // Shown once a ZIP resolves. {city} and {state} are substituted.
+    cityLine:     'Serving {city}, {state} — and every ZIP around it',
+    // Used when the city lookup is unavailable but the state is known from the
+    // offline table. Separate string so it never reads "New Jersey, NJ".
+    stateLine:    'Serving all of {stateName} — every ZIP in it',
+    fallbackLine: 'Tell us your ZIP and we will confirm your appointment window'
+  },
+
+  /* -- trust ------------------------------------------------------------
+     Claims a customer can check. Anything you cannot stand behind, delete —
+     do not soften it. */
+  trust: [
+    { t: 'Licensed & insured',            d: 'Fully licensed and insured for every job we take.' },
+    { t: 'Professional-grade materials',  d: 'Commercial refinishing systems, not hardware-store tub paint.' },
+    { t: 'No surprise charges',           d: 'The price we quote is the price you pay. No add-ons on the day.' },
+    { t: 'Pay when it is finished',       d: 'No payment until the work is complete and you are satisfied.' },
+    { t: 'Real work, real reviews',       d: 'Every photo and review on this page is from an actual customer job.' },
+    { t: 'Written warranty',              d: 'WARRANTY_LOCKUP' }   // rendered as the lockup
+  ],
+
+  /* -- reviews ----------------------------------------------------------
+     ⚠ REAL REVIEWS ONLY. Paste genuine ones from your existing profiles.
+     Invented testimonials break FTC rules and put the Ads account at risk,
+     so these ship empty and the page flags them until you replace them. */
+  reviews: [
+    { name: '', city: '', stars: 5, text: '', source: 'Google' },
+    { name: '', city: '', stars: 5, text: '', source: 'Google' },
+    { name: '', city: '', stars: 5, text: '', source: 'Google' }
+  ],
 
   /* -- 2. hero video ----------------------------------------------------
      The real refinishing footage. This is the main selling element, not a
@@ -96,6 +148,19 @@ window.SITE_CONFIG = {
     // real availability rather than building a second calendar.
     calendarUrl:  '',
     calendarHeight: 760
+  },
+
+  /* -- booking page -----------------------------------------------------
+     book.html is deliberately sparse: three strong pieces of proof, the four
+     conversion buttons, and the calendar. Nothing else competes with booking.
+     Use your three BEST results — this is the last thing someone sees before
+     choosing a time. */
+  booking: {
+    media: [
+      { type: 'image', src: 'media/book-1.jpg', cap: 'Before → after, full refinish' },
+      { type: 'video', src: 'media/book-2.mp4', cap: 'Professional spray application' },
+      { type: 'image', src: 'media/book-3.jpg', cap: 'Finished gloss, ready to use' }
+    ]
   },
 
   /* -- 5. tracking ------------------------------------------------------ */
